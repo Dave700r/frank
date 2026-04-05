@@ -7,7 +7,7 @@ A self-hosted AI family assistant that lives in your Matrix chat. Frank manages 
 - **Grocery & Inventory** — shopping lists, stock tracking, low-stock alerts, consumption-based reorder suggestions
 - **Finance** — expense logging, monthly summaries, account balances, bank/credit card statement parsing (PDF), receipt scanning (images) — all via [Firefly III](https://www.firefly-iii.org/)
 - **Email** — reads your inbox (IMAP or Gmail API), scans for bills, sends emails on your behalf (via AgentMail)
-- **Photos** — search and share family photos from [Immich](https://immich.app/) by text, date, person, or album
+- **Photos** — search and share family photos from [Immich](https://immich.app/) — smart search (CLIP), face/person search, date ranges, albums
 - **Reminders** — natural language reminders ("remind me in 30 minutes to check the oven"), follow-up scheduling
 - **Morning Briefings** — weather, commute times, grocery status, crypto prices, delivered to the family group every morning
 - **Recipes** — searchable family recipe database
@@ -85,9 +85,12 @@ Invite your bot user to a Matrix room and start chatting. Frank responds to natu
 !bills         Recent bills (DM)
 !remind <when> <what>  Set a reminder
 !recipes       Browse recipes
-!buddy         Your companion pet
-!briefing      Morning briefing on demand
-!help          All commands
+!photos <query> Search photos (Immich)
+!albums         List photo albums
+!people         Recognized people
+!buddy          Your companion pet
+!briefing       Morning briefing on demand
+!help           All commands
 ```
 
 ## Configuration
@@ -143,6 +146,43 @@ permissions.py         Action risk classification
 voice_api.py           HTTP API for voice integration
 web_search.py          Tavily web search
 ```
+
+## Immich (Photo Search)
+
+Frank can search and share photos from a self-hosted [Immich](https://immich.app/) instance.
+
+### Setup
+
+1. Enable in `config.yaml`:
+   ```yaml
+   immich:
+     enabled: true
+     base_url: "https://your-immich:2283/api"
+     api_key: "your-api-key"    # Immich > Profile > Account Settings > API Keys
+     skip_ssl_verify: false      # true if using self-signed certs
+   ```
+
+2. Make sure Immich's machine learning is working — smart search and face detection require the ML container. Test with: `curl -s https://your-immich/api/search/smart -H "x-api-key: KEY" -H "Content-Type: application/json" -d '{"query":"test"}'`
+
+### What works
+
+- **Smart search** — natural language queries ("photos at the beach", "birthday cake") powered by CLIP
+- **Date search** — "photos from last Christmas", specific date ranges
+- **People** — search by recognized faces ("photos of Mom")
+- **Albums** — list and browse albums
+- **Sharing** — Frank sends thumbnails directly in Matrix chat
+
+### Commands
+
+```
+!photos <query>    Smart search (or ask Frank naturally)
+!albums            List albums
+!people            List recognized people
+```
+
+### Start9 users
+
+If running Immich on Start9, change the ML URL to `http://localhost:3003` in Immich's Administration > Machine Learning > URL. Start9 runs containers in a shared namespace, so the default Docker hostname doesn't resolve.
 
 ## Matrix Setup
 
