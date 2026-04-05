@@ -6,7 +6,8 @@ A self-hosted AI family assistant that lives in your Matrix chat. Frank manages 
 
 - **Grocery & Inventory** — shopping lists, stock tracking, low-stock alerts, consumption-based reorder suggestions
 - **Finance** — expense logging, monthly summaries, account balances, bank/credit card statement parsing (PDF), receipt scanning (images) — all via [Firefly III](https://www.firefly-iii.org/)
-- **Email** — reads your inbox (IMAP), scans for bills, sends emails on your behalf (via AgentMail)
+- **Email** — reads your inbox (IMAP or Gmail API), scans for bills, sends emails on your behalf (via AgentMail)
+- **Photos** — search and share family photos from [Immich](https://immich.app/) by text, date, person, or album
 - **Reminders** — natural language reminders ("remind me in 30 minutes to check the oven"), follow-up scheduling
 - **Morning Briefings** — weather, commute times, grocery status, crypto prices, delivered to the family group every morning
 - **Recipes** — searchable family recipe database
@@ -97,8 +98,10 @@ All configuration lives in `config.yaml`. Every feature is optional — disable 
 | Matrix chat | *(always on)* | `MATRIX_BOT_PASSWORD` | Matrix homeserver |
 | AI responses | *(always on)* | `OPENROUTER_API_KEY` | OpenRouter |
 | Finance | `firefly.enabled` | `FIREFLY_TOKEN` | Firefly III |
-| Owner email | `email.enabled` | `EMAIL_USER`, `EMAIL_PASS` | IMAP server |
+| Owner email (IMAP) | `email.enabled` | `EMAIL_USER`, `EMAIL_PASS` | IMAP server |
+| Owner email (Gmail) | `gmail.enabled` | *(OAuth2 flow)* | Gmail API |
 | Bot email | `agentmail.enabled` | `AGENTMAIL_API_KEY` | AgentMail |
+| Photos | `immich.enabled` | *(API key in config)* | Immich |
 | Memory | `mem0.enabled` | — | Ollama |
 | Web search | `web_search.enabled` | `TAVILY_API_KEY` | Tavily |
 | Voice API | `voice.enabled` | — | — |
@@ -117,7 +120,9 @@ prompt_builder.py      Modular prompt assembly
 db.py                  Inventory/shopping/finance (SQLite)
 firefly.py             Firefly III API
 email_client.py        IMAP/SMTP
+gmail_client.py        Gmail API (OAuth2)
 agentmail_client.py    AgentMail API
+immich_client.py       Immich photo library API
 briefing.py            Morning briefing data collection
 reminders.py           Reminder system (SQLite)
 recipes.py             Recipe database (SQLite)

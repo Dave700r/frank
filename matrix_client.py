@@ -54,15 +54,21 @@ firefly = None
 email_client = None
 agentmail_client = None
 mem0_memory = None
+gmail_client = None
+immich_client = None
 
 if config.FIREFLY_ENABLED:
     import firefly
 if config.EMAIL_ENABLED:
     import email_client
+if config.GMAIL_ENABLED:
+    import gmail_client
 if config.AGENTMAIL_ENABLED:
     import agentmail_client
 if config.MEM0_ENABLED:
     import mem0_memory
+if config.IMMICH_ENABLED:
+    import immich_client
 
 log = logging.getLogger("family-bot.matrix")
 log.setLevel(logging.DEBUG)
@@ -133,6 +139,23 @@ async def _send_to_user(matrix_id: str, text: str):
     )
     if hasattr(resp, "room_id"):
         await _send(resp.room_id, text)
+
+
+async def _send_image(room_id: str, file_path: str, body: str = "image"):
+    """Send an image file to a Matrix room."""
+    import mimetypes
+    mime = mimetypes.guess_type(file_path)[0] or "image/jpeg"
+    with open(file_path, "rb") as f:
+        data = f.read()
+    resp, _ = await client.upload(data, content_type=mime, filename=body)
+    if hasattr(resp, "content_uri"):
+        content = {
+            "msgtype": "m.image",
+            "body": body,
+            "url": resp.content_uri,
+            "info": {"mimetype": mime, "size": len(data)},
+        }
+        await client.room_send(room_id, "m.room.message", content)
 
 
 # ─── Command Handlers ───
@@ -543,6 +566,10 @@ async def cmd_help(room_id: str):
         "!inbox - Check emails\n"
         "!send <to> <subject> | <body> - Send email\n"
         "!bills - Recent bills\n\n"
+        "PHOTOS\n"
+        "!photos <search> - Search family photos\n"
+        "!albums - List photo albums\n"
+        "!people - Recognized people in photos\n\n"
         "BUDDY\n"
         "!buddy - Check your companion pet\n"
         "!buddy <name> - Name your buddy\n\n"
@@ -609,6 +636,54 @@ async def cmd_buddy(room_id: str, args: str, user_name: str):
         await _send(room_id, info)
 
 
+async def cmd_photos(room_id: str, args: str):
+    """Search photos. Usage: !photos <query>"""
+    if not immich_client:
+        await _send(room_id, "Photo library is not configured.")
+        return
+    if not args:
+        await _send(room_id, "Usage: !photos <search>\nExamples: !photos beach sunset, !photos birthday cake")
+        return
+    results = immich_client.search_photos(args, limit=5)
+    await _send(room_id, immich_client.format_results(results, args))
+    if results:
+        # Send first result as thumbnail
+        path = immich_client.download_thumbnail(results[0]["id"])
+        if path:
+            await _send_image(room_id, path, f"Top result for '{args}'")
+
+
+async def cmd_albums(room_id: str):
+    """List photo albums."""
+    if not immich_client:
+        await _send(room_id, "Photo library is not configured.")
+        return
+    albums = immich_client.get_albums()
+    if not albums:
+        await _send(room_id, "No albums found.")
+        return
+    lines = ["PHOTO ALBUMS\n"]
+    for a in albums[:15]:
+        lines.append(f"  {a['name']} ({a['count']} photos)")
+    await _send(room_id, "\n".join(lines))
+
+
+async def cmd_people(room_id: str):
+    """List recognized people in photos."""
+    if not immich_client:
+        await _send(room_id, "Photo library is not configured.")
+        return
+    people = immich_client.get_people()
+    if not people:
+        await _send(room_id, "No recognized people yet.")
+        return
+    lines = ["PEOPLE IN PHOTOS\n"]
+    for p in people[:20]:
+        lines.append(f"  {p['name']}")
+    lines.append("\nUse !photos <name> to see their photos.")
+    await _send(room_id, "\n".join(lines))
+
+
 COMMANDS = {
     "list": lambda rid, args, room, sender, uname: cmd_list(rid),
     "add": lambda rid, args, room, sender, uname: cmd_add(rid, args, uname),
@@ -630,6 +705,9 @@ COMMANDS = {
     "resetprofile": lambda rid, args, room, sender, uname: cmd_resetprofile(rid, uname),
     "send": lambda rid, args, room, sender, uname: cmd_send_email(rid, args, room, sender),
     "buddy": lambda rid, args, room, sender, uname: cmd_buddy(rid, args, uname),
+    "photos": lambda rid, args, room, sender, uname: cmd_photos(rid, args),
+    "albums": lambda rid, args, room, sender, uname: cmd_albums(rid),
+    "people": lambda rid, args, room, sender, uname: cmd_people(rid),
     "help": lambda rid, args, room, sender, uname: cmd_help(rid),
 }
 
@@ -1055,6 +1133,14 @@ async def _handle_ai_message(text: str, user_name: str, room_id: str,
                         log.info(f"Email sent to {to_addr}: {subject}")
                     except Exception as e:
                         log.error(f"Email send failed: {e}")
+            elif act == "search_photos":
+                query = action.get("query", "")
+                if query and immich_client:
+                    results = immich_client.search_photos(query, limit=3)
+                    if results:
+                        path = immich_client.download_thumbnail(results[0]["id"])
+                        if path:
+                            await _send_image(room_id, path, f"Photo: {query}")
             elif act == "followup":
                 topic = action.get("topic", "")
                 question = action.get("question", "")

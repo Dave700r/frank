@@ -6,6 +6,9 @@ APScheduler>=3.10,<4.0
 aiohttp>=3.9
 
 # Optional — comment out what you don't need
-pdfplumber>=0.11        # PDF statement parsing
-agentmail>=0.1          # Bot's own email (AgentMail service)
-mem0ai>=0.1             # Semantic memory (requires Ollama)
+pdfplumber>=0.11                # PDF statement parsing
+agentmail>=0.1                  # Bot's own email (AgentMail service)
+mem0ai>=0.1                     # Semantic memory (requires Ollama)
+google-api-python-client>=2.0   # Gmail API
+google-auth>=2.0                # Gmail OAuth2
+google-auth-oauthlib>=1.0       # Gmail OAuth2 flow

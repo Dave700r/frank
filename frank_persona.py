@@ -143,6 +143,7 @@ ACTIONS (include JSON at END of reply — it gets stripped automatically):
 - {{"action": "send_message", "to": "name", "message": "text"}} — DM a family member
 - {{"action": "followup", "topic": "short topic", "question": "casual follow-up question", "hours": 24}} — remind yourself to check back on something later (e.g. someone mentions a job interview tomorrow, a vet appointment, waiting for a delivery). Only use when there's a natural reason to follow up.
 - {{"action": "send_email", "to": "email@address.com", "subject": "subject line", "body": "email body text"}} — send an email from """ + config.AGENTMAIL_ADDRESS + """. Only when """ + config.FAMILY_MEMBERS[config.OWNER]["nickname"] + """ explicitly asks you to send/reply to an email.
+- {{"action": "search_photos", "query": "search terms"}} — search the family photo library. Use when someone asks to see photos, pictures, or images of something.
 Only ONE JSON block, only at the very end.
 
 The person talking: {user_name}

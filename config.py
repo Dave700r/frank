@@ -91,6 +91,16 @@ SMTP_PORT = _email.get("smtp_port", 1025)
 EMAIL_USER = os.environ.get("EMAIL_USER", "")
 EMAIL_PASS = os.environ.get("EMAIL_PASS", "")
 
+# --- Gmail (alternative to IMAP) ---
+_gmail = _cfg.get("gmail", {})
+GMAIL_ENABLED = _gmail.get("enabled", False)
+
+# --- Immich ---
+_immich = _cfg.get("immich", {})
+IMMICH_ENABLED = _immich.get("enabled", False)
+IMMICH_BASE_URL = _immich.get("base_url", "")
+IMMICH_API_KEY = _immich.get("api_key", "")
+
 # --- AgentMail (bot's own email) ---
 _agentmail = _cfg.get("agentmail", {})
 AGENTMAIL_ENABLED = _agentmail.get("enabled", False)
