@@ -1,0 +1,30 @@
+# Config with secrets
+config.yaml
+
+# Databases
+*.db
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+*.egg-info/
+
+# Tokens and secrets
+*_token.txt
+*.key
+.env
+
+# Logs
+*.log
+daily-logs/
+
+# Data files
+mem0_data/
+mem0_history.db
+spend-log.json
+*.json.bak
+
+# OS
+.DS_Store

@@ -1,0 +1,115 @@
+# Frank Family Bot Configuration
+# Copy this file to config.yaml and fill in your values.
+# Environment variables override any value here (see comments).
+
+# --- Bot Identity ---
+bot:
+  name: "Frank"
+  # Matrix homeserver and bot account
+  matrix_homeserver: "https://matrix.example.com"
+  matrix_bot_user: "@frank:matrix.example.com"
+  # Password: set MATRIX_BOT_PASSWORD env var
+  matrix_family_room_id: "!abcdef:matrix.example.com"
+
+# --- Family Members ---
+# The first member listed is the "owner" (admin) who can access email, finances, etc.
+# Each member needs a unique key, a matrix_id, and a nickname.
+family:
+  owner: "dave"  # key of the admin member below
+  members:
+    dave:
+      matrix_id: "@dave:matrix.example.com"
+      nickname: "Dad"
+    partner:
+      matrix_id: "@partner:matrix.example.com"
+      nickname: "Partner"
+    # Add more members as needed:
+    # child1:
+    #   matrix_id: "@child1:matrix.example.com"
+    #   nickname: "Child1"
+
+# --- Paths ---
+# Where Frank stores data. Defaults work for most setups.
+paths:
+  data_dir: "./data"            # databases, logs, mem0 data
+  # These are relative to data_dir unless absolute:
+  inventory_db: "inventory.db"
+  finance_db: "finance.db"
+  spend_log: "spend-log.json"
+  recipe_db: "recipes.db"
+  reminders_db: "reminders.db"
+  daily_logs_dir: "daily-logs"
+  memory_dir: "memory"
+
+# --- Location ---
+location:
+  latitude: 43.65
+  longitude: -79.38
+  timezone: "America/New_York"
+
+# --- AI ---
+# Uses OpenRouter (OpenAI-compatible). Set OPENROUTER_API_KEY env var.
+ai:
+  model: "anthropic/claude-haiku-4.5"
+
+# --- Firefly III (optional) ---
+# Personal finance manager. Set FIREFLY_TOKEN env var.
+firefly:
+  enabled: true
+  base_url: "http://localhost:8090/api/v1"
+  # Map friendly names to Firefly account IDs
+  accounts:
+    chequing: 1
+    savings: 2
+    credit_card: 3
+
+# --- Email: Owner's Inbox (optional) ---
+# IMAP access to the owner's personal email (read-only unless sending requested).
+# Set EMAIL_USER and EMAIL_PASS env vars.
+email:
+  enabled: true
+  imap_host: "127.0.0.1"
+  imap_port: 1143
+  smtp_host: "127.0.0.1"
+  smtp_port: 1025
+
+# --- Email: Bot's Own Inbox (optional) ---
+# AgentMail or similar service for Frank's own email address.
+# Set AGENTMAIL_API_KEY env var.
+agentmail:
+  enabled: true
+  address: "frank@example.com"
+
+# --- Mem0 Memory (optional) ---
+# Semantic memory using Mem0 with Ollama embeddings.
+mem0:
+  enabled: true
+  ollama_base_url: "http://localhost:11434"
+  ollama_model: "nomic-embed-text"
+  llm_model: "google/gemini-2.0-flash-001"
+  # Set to true if Ollama uses a self-signed cert
+  skip_ssl_verify: false
+
+# --- MCP Memory Server (optional) ---
+mcp:
+  index_url: "http://localhost:8765/index"
+
+# --- Web Search (optional) ---
+# Set TAVILY_API_KEY env var.
+web_search:
+  enabled: true
+
+# --- Voice API (optional) ---
+voice:
+  enabled: false
+  host: "127.0.0.1"
+  port: 5123
+
+# --- Persona ---
+# Customize Frank's personality. See persona.yaml.example for full customization.
+# If persona_file is not set, Frank uses a friendly default personality.
+persona_file: null  # e.g., "persona.yaml"
+
+# --- Spanish Immersion (optional) ---
+# Members who are learning Spanish get Spanish mixed into conversations.
+spanish_learners: []  # e.g., ["dave", "partner"]

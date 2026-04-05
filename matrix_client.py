@@ -1,0 +1,1308 @@
+"""Matrix client for Frank - runs alongside Telegram bot.
+Uses matrix-nio to connect to Synapse homeserver."""
+import asyncio
+import io
+import logging
+import os
+import random
+import re
+import json
+import tempfile
+from datetime import datetime, timedelta
+from pathlib import Path
+
+from nio import (
+    AsyncClient,
+    AsyncClientConfig,
+    MatrixRoom,
+    RoomMessageText,
+    RoomMessageImage,
+    RoomMessageFile,
+    RoomEncryptedFile,
+    RoomEncryptedImage,
+    DownloadResponse,
+    DownloadError,
+    LoginResponse,
+    SyncResponse,
+    Event,
+    MegolmEvent,
+    KeyVerificationStart,
+    KeyVerificationCancel,
+    KeyVerificationKey,
+    KeyVerificationMac,
+    ToDeviceError,
+    RoomSendResponse,
+)
+from nio.store import SqliteStore
+
+import config
+import db
+import ai
+import humanize
+import episodes
+import buddy
+import coordinator
+import ultraplan
+import style_learner
+import briefing
+import firefly
+import email_client
+import agentmail_client
+import conversation_log
+import mem0_memory
+import reminders
+import recipes
+
+log = logging.getLogger("family-bot.matrix")
+log.setLevel(logging.DEBUG)
+
+client: AsyncClient = None
+_first_sync_done = False
+_batcher = humanize.MessageBatcher(delay=2.5)
+_pending_receipts = {}  # room_id -> receipt/statement data awaiting confirmation
+_recent_file_rooms = {}  # room_id -> timestamp, tracks rooms with recent file uploads
+
+
+def _trust_all_devices():
+    """Trust all known devices for all users so we can send encrypted messages."""
+    if not client or not client.olm:
+        return
+    try:
+        for user_id in list(client.device_store.users):
+            devices = client.device_store.active_user_devices(user_id)
+            # Handle both dict and generator returns
+            if hasattr(devices, 'values'):
+                device_list = devices.values()
+            elif hasattr(devices, '__iter__'):
+                device_list = list(devices)
+            else:
+                continue
+            for device in device_list:
+                if hasattr(device, 'device_id'):
+                    if not client.olm.is_device_verified(device):
+                        client.verify_device(device)
+                        log.info(f"Trusted device {device.device_id} for {user_id}")
+    except Exception as e:
+        log.warning(f"Device trust error: {e}", exc_info=True)
+
+
+def _matrix_user_to_name(user_id: str) -> str:
+    """Convert @dave:matrix.levelitis.ca -> dave"""
+    return config.MATRIX_ID_TO_NAME.get(user_id, user_id.split(":")[0].lstrip("@"))
+
+
+def _is_private(room: MatrixRoom) -> bool:
+    """Check if this is a DM (2 members) vs group room."""
+    return room.member_count <= 2
+
+
+async def _send(room_id: str, text: str, html: str = None):
+    """Send a message to a Matrix room."""
+    content = {
+        "msgtype": "m.text",
+        "body": text,
+    }
+    if html:
+        content["format"] = "org.matrix.custom.html"
+        content["formatted_body"] = html
+    await client.room_send(room_id, "m.room.message", content)
+
+
+async def _send_to_user(matrix_id: str, text: str):
+    """Send a DM to a user by their Matrix ID."""
+    # Find or create a DM room with this user
+    for room_id, room in client.rooms.items():
+        if room.member_count == 2 and matrix_id in [m.user_id for m in room.users.values()]:
+            await _send(room_id, text)
+            return
+    # No existing DM room, create one
+    resp = await client.room_create(
+        invite=[matrix_id],
+        is_direct=True,
+    )
+    if hasattr(resp, "room_id"):
+        await _send(resp.room_id, text)
+
+
+# ─── Command Handlers ───
+
+async def cmd_list(room_id: str):
+    items = db.get_shopping_list()
+    if not items:
+        await _send(room_id, "Shopping list is empty! Nothing to buy.")
+        return
+
+    cat_emoji = {
+        "PRODUCE": "🥬", "DAIRY": "🥛", "MEAT": "🥩", "BAKERY": "🍞",
+        "PANTRY": "🥫", "FROZEN": "🧊", "HOUSEHOLD": "🧹", "PET": "🐕",
+        "OTHER": "📦",
+    }
+
+    by_cat = {}
+    for item in items:
+        cat = (item["category"] or "other").upper()
+        qty = f"  x{item['qty']}" if item["qty"] else ""
+        by_cat.setdefault(cat, []).append(f"  {item['name']}{qty}")
+
+    lines = ["SHOPPING LIST\n"]
+    for cat, entries in sorted(by_cat.items()):
+        emoji = cat_emoji.get(cat, "📦")
+        lines.append(f"{emoji} {cat}")
+        lines.extend(entries)
+        lines.append("")
+
+    lines.append(f"{len(items)} items")
+    msg = "\n".join(lines)
+    await _send(room_id, msg)
+    ai.inject_context(f"matrix_{room_id}", "checked shopping list", msg[:300])
+
+
+async def cmd_add(room_id: str, args: str, user_name: str):
+    if not args:
+        await _send(room_id, "Usage: !add <item name>")
+        return
+    db.add_shopping_item(args, requested_by=user_name)
+    await _send(room_id, f"Added {args} to the list!")
+
+
+async def cmd_bought(room_id: str, args: str, user_name: str):
+    if not args:
+        await _send(room_id, "Usage: !bought <item name>")
+        return
+    if db.mark_item_bought(args, bought_by=user_name):
+        db.record_event(args, "bought", note=f"Bought by {user_name}")
+        await _send(room_id, f"Marked {args} as bought!")
+    else:
+        await _send(room_id, f"Couldn't find '{args}' on the shopping list.")
+
+
+async def cmd_stock(room_id: str):
+    items = db.get_inventory()
+    if not items:
+        await _send(room_id, "No inventory data.")
+        return
+
+    by_cat = {}
+    for item in items:
+        cat = item["category"] or "other"
+        qty = item["current_qty"] or 0
+        status = "OUT" if qty == 0 else f"{qty} {item['unit']}"
+        by_cat.setdefault(cat.upper(), []).append(f"  {item['name']}: {status}")
+
+    lines = ["INVENTORY\n"]
+    for cat, entries in sorted(by_cat.items()):
+        lines.append(f"{cat}:")
+        lines.extend(entries)
+        lines.append("")
+
+    await _send(room_id, "\n".join(lines))
+
+
+async def cmd_spent(room_id: str, args: str, user_name: str):
+    parts = args.split(None, 1) if args else []
+    if len(parts) < 2:
+        await _send(room_id, "Usage: !spent <amount> <store>\nExample: !spent 45.50 Fortinos")
+        return
+    try:
+        amount = float(parts[0].replace("$", ""))
+    except ValueError:
+        await _send(room_id, "Amount must be a number. Example: !spent 45.50 Fortinos")
+        return
+
+    store = parts[1]
+    db.log_spend(store, amount)
+    try:
+        firefly.log_receipt(store, amount)
+    except Exception as e:
+        log.warning(f"Firefly log failed: {e}")
+    await _send(room_id, f"Logged ${amount:.2f} at {store}")
+
+
+async def cmd_owe(room_id: str):
+    lines = []
+    for tracker in config.WORKSPACE.glob("*_payment_tracker.json"):
+        try:
+            with open(tracker) as f:
+                data = json.load(f)
+            if data.get("status") == "pending":
+                lines.append(
+                    f"- {data['debtor']} owes {data['creditor']} ${data['amount']:.2f} "
+                    f"({data.get('purpose', 'unknown')})"
+                )
+        except (json.JSONDecodeError, KeyError):
+            continue
+    if lines:
+        await _send(room_id, "OUTSTANDING PAYMENTS:\n\n" + "\n".join(lines))
+    else:
+        await _send(room_id, "No outstanding payments!")
+
+
+async def cmd_summary(room_id: str):
+    try:
+        data = firefly.get_monthly_summary()
+        lines = [f"SPENDING THIS MONTH: ${data['total']:.2f}\n"]
+        for cat, amt in sorted(data["by_category"].items(), key=lambda x: -x[1]):
+            lines.append(f"  {cat}: ${amt:.2f}")
+        await _send(room_id, "\n".join(lines))
+    except Exception as e:
+        log.error(f"Firefly summary error: {e}")
+        await _send(room_id, "Couldn't fetch spending data right now.")
+
+
+async def cmd_balance(room_id: str, room: MatrixRoom, sender: str):
+    if not _is_private(room):
+        await _send(room_id, "I'll DM you the balances -- that's private info.")
+        try:
+            balances = firefly.get_account_balances()
+            lines = ["ACCOUNT BALANCES\n"]
+            for b in balances:
+                lines.append(f"  {b['name']}: ${float(b['balance']):,.2f} {b['currency']}")
+            await _send_to_user(sender, "\n".join(lines))
+        except Exception as e:
+            log.error(f"Firefly balance error: {e}")
+            await _send_to_user(sender, "Couldn't fetch balances right now.")
+        return
+    try:
+        balances = firefly.get_account_balances()
+        lines = ["ACCOUNT BALANCES\n"]
+        for b in balances:
+            lines.append(f"  {b['name']}: ${float(b['balance']):,.2f} {b['currency']}")
+        await _send(room_id, "\n".join(lines))
+    except Exception as e:
+        log.error(f"Firefly balance error: {e}")
+        await _send(room_id, "Couldn't fetch balances right now.")
+
+
+async def cmd_inbox(room_id: str, room: MatrixRoom, sender: str):
+    user_name = _matrix_user_to_name(sender)
+    if user_name != config.OWNER:
+        await _send(room_id, "Email access is owner-only.")
+        return
+
+    is_dm = _is_private(room)
+    if not is_dm:
+        await _send(room_id, "I'll DM you -- email is private.")
+
+    target = room_id if is_dm else None
+
+    async def send_msg(msg):
+        if is_dm:
+            await _send(room_id, msg)
+        else:
+            await _send_to_user(sender, msg)
+
+    try:
+        # Owner's email inbox
+        owner_nick = config.FAMILY_MEMBERS[config.OWNER]["nickname"]
+        proton = email_client.get_unread(limit=5)
+        lines = [f"{owner_nick.upper()}'S EMAIL\n"]
+        if proton:
+            lines.append(f"{len(proton)} recent:\n")
+            for e in proton:
+                lines.append(f"From: {e['from']}")
+                lines.append(f"Subject: {e['subject']}")
+                lines.append(f"Date: {e['date']}")
+                lines.append("")
+        else:
+            lines.append("No unread emails.\n")
+
+        # Frank's AgentMail inbox
+        frank_mail = agentmail_client.get_unread(limit=5)
+        lines.append(f"FRANK'S EMAIL (frankai@agentmail.to)\n")
+        if frank_mail:
+            lines.append(f"{len(frank_mail)} recent:\n")
+            for e in frank_mail:
+                lines.append(f"From: {e['from']}")
+                lines.append(f"Subject: {e['subject']}")
+                lines.append(f"Date: {e['date'][:16]}")
+                lines.append("")
+        else:
+            lines.append("No emails.")
+
+        msg = "\n".join(lines)
+        await send_msg(msg)
+        ai.inject_context(f"matrix_{room_id}", "checked both email inboxes", msg[:500])
+
+    except Exception as e:
+        log.error(f"Email error: {e}")
+        await send_msg("Couldn't check email right now.")
+
+
+async def cmd_bills(room_id: str, room: MatrixRoom, sender: str):
+    user_name = _matrix_user_to_name(sender)
+    if user_name != config.OWNER:
+        await _send(room_id, "Bill access is owner-only.")
+        return
+
+    is_dm = _is_private(room)
+    if not is_dm:
+        await _send(room_id, "I'll DM you the bills.")
+
+    try:
+        bills = email_client.get_bills(limit=5)
+        if not bills:
+            msg = "No bills found."
+            if is_dm:
+                await _send(room_id, msg)
+            else:
+                await _send_to_user(sender, msg)
+            return
+
+        lines = ["RECENT BILLS\n"]
+        for b in bills:
+            lines.append(f"From: {b['from']}")
+            lines.append(f"Subject: {b['subject']}")
+            lines.append(f"Date: {b['date']}")
+            parsed = email_client.parse_bill_email(b["subject"], b["body_preview"], b["from"])
+            if parsed and parsed.get("amount"):
+                lines.append(f"Amount: ${parsed['amount']:.2f}")
+                if parsed.get("due_date"):
+                    lines.append(f"Due: {parsed['due_date']}")
+            lines.append("")
+
+        msg = "\n".join(lines)
+        if is_dm:
+            await _send(room_id, msg)
+        else:
+            await _send_to_user(sender, msg)
+    except Exception as e:
+        log.error(f"Bills error: {e}")
+        msg = "Couldn't check bills right now."
+        if is_dm:
+            await _send(room_id, msg)
+        else:
+            await _send_to_user(sender, msg)
+
+
+async def cmd_remind(room_id: str, args: str, sender: str, user_name: str):
+    if not args:
+        await _send(room_id,
+            "Usage: !remind <when> <what>\n"
+            "Examples:\n"
+            "  !remind in 30 minutes check the oven\n"
+            "  !remind tomorrow call the dentist\n"
+            "  !remind at 3pm pick up Emily"
+        )
+        return
+
+    remind_at, message = reminders.parse_reminder_time(args)
+    if not remind_at:
+        await _send(room_id, "I couldn't figure out the time. Try: !remind in 30 minutes check the oven")
+        return
+
+    message = message.strip()
+    for prefix in ("to ", "that ", "me to ", "me that ", "remind me to ", "remind me "):
+        if message.lower().startswith(prefix):
+            message = message[len(prefix):]
+            break
+
+    if not message:
+        message = args
+
+    # Store Matrix user ID for delivery
+    reminders.add_reminder(user_name, sender, message, remind_at)
+    await _send(room_id,
+        f"Got it! I'll remind you: \"{message}\"\n"
+        f"When: {remind_at.strftime('%B %d at %I:%M %p')}"
+    )
+
+
+async def cmd_my_reminders(room_id: str, user_name: str):
+    pending = reminders.get_pending_for_user(user_name)
+    if not pending:
+        await _send(room_id, "No pending reminders!")
+        return
+
+    lines = ["YOUR REMINDERS\n"]
+    for r in pending:
+        lines.append(f"  #{r['id']} - {r['message']}")
+        lines.append(f"    When: {r['remind_at']}")
+        lines.append("")
+    lines.append("Cancel with !cancel <number>")
+    await _send(room_id, "\n".join(lines))
+
+
+async def cmd_cancel_reminder(room_id: str, args: str):
+    if not args:
+        await _send(room_id, "Usage: !cancel <reminder number>")
+        return
+    try:
+        rid = int(args.replace("#", ""))
+    except ValueError:
+        await _send(room_id, "Give me the reminder number, e.g. !cancel 3")
+        return
+
+    if reminders.cancel_reminder(rid):
+        await _send(room_id, f"Reminder #{rid} cancelled.")
+    else:
+        await _send(room_id, f"Couldn't find reminder #{rid}.")
+
+
+async def cmd_recipes(room_id: str, args: str):
+    if args:
+        results = recipes.search_recipes(args)
+        if not results:
+            await _send(room_id, f"No recipes found for '{args}'.")
+            return
+        lines = [f"RECIPES matching '{args}':\n"]
+        for r in results:
+            time_str = ""
+            total = (r["prep_time"] or 0) + (r["cook_time"] or 0)
+            if total:
+                time_str = f" ({total} min)"
+            lines.append(f"  #{r['id']} {r['name']}{time_str}")
+        lines.append("\nUse !recipe <number> to see the full recipe.")
+        await _send(room_id, "\n".join(lines))
+    else:
+        all_recipes = recipes.list_recipes()
+        if not all_recipes:
+            await _send(room_id, "No recipes saved yet.")
+            return
+        lines = ["ALL RECIPES:\n"]
+        for r in all_recipes:
+            time_str = ""
+            total = (r["prep_time"] or 0) + (r["cook_time"] or 0)
+            if total:
+                time_str = f" ({total} min)"
+            lines.append(f"  #{r['id']} {r['name']}{time_str}")
+        lines.append("\nUse !recipe <number> for details, or !recipes <search> to search.")
+        await _send(room_id, "\n".join(lines))
+
+
+async def cmd_recipe(room_id: str, args: str):
+    if not args:
+        await _send(room_id, "Usage: !recipe <number>")
+        return
+    try:
+        rid = int(args.replace("#", ""))
+    except ValueError:
+        await _send(room_id, "Give me the recipe number, e.g. !recipe 1")
+        return
+
+    data = recipes.get_recipe(rid)
+    if not data:
+        await _send(room_id, f"Recipe #{rid} not found.")
+        return
+
+    formatted = recipes.format_recipe(data)
+    await _send(room_id, formatted)
+
+
+async def cmd_briefing(room_id: str):
+    msg = briefing.build_briefing()
+    await _send(room_id, msg)
+
+
+async def cmd_help(room_id: str):
+    await _send(room_id,
+        "HEY! I'm Frank. Here's what I can do:\n\n"
+        "GROCERIES\n"
+        "!list - Shopping list\n"
+        "!add <item> - Add to list\n"
+        "!bought <item> - Mark as bought\n"
+        "!stock - Full inventory\n\n"
+        "MONEY\n"
+        "!spent <amount> <store> - Log a purchase\n"
+        "!summary - Monthly spending breakdown\n"
+        "!balance - Account balances (DM only)\n"
+        "!owe - Who owes who\n\n"
+        "REMINDERS\n"
+        "!remind <when> <what> - Set a reminder\n"
+        "!reminders - My pending reminders\n"
+        "!cancel <#> - Cancel a reminder\n\n"
+        "RECIPES\n"
+        "!recipes - List all recipes\n"
+        "!recipes <search> - Search recipes\n"
+        "!recipe <#> - Show full recipe\n\n"
+        "EMAIL (DM only)\n"
+        "!inbox - Check emails\n"
+        "!send <to> <subject> | <body> - Send email\n"
+        "!bills - Recent bills\n\n"
+        "BUDDY\n"
+        "!buddy - Check your companion pet\n"
+        "!buddy <name> - Name your buddy\n\n"
+        "OTHER\n"
+        "!briefing - Morning briefing\n"
+        "!help - This message\n\n"
+        "Or just talk to me naturally."
+    )
+
+
+# ─── Message Router ───
+
+async def cmd_send_email(room_id: str, args: str, room: MatrixRoom, sender: str):
+    """Send an email. Usage: !send <to> <subject> | <body>"""
+    user_name = _matrix_user_to_name(sender)
+    if user_name != config.OWNER:
+        await _send(room_id, "Email sending is owner-only.")
+        return
+    if not _is_private(room):
+        await _send(room_id, "Use this in a DM for privacy.")
+        return
+    if not args or "|" not in args:
+        await _send(room_id, "Usage: !send <to> <subject> | <body>\nExample: !send john@example.com Quick question | Hey John, are we still on for Friday?")
+        return
+
+    header, body = args.split("|", 1)
+    parts = header.strip().split(None, 1)
+    if len(parts) < 2:
+        await _send(room_id, "Need both email address and subject. Example: !send john@example.com Quick question | message body")
+        return
+
+    to_addr = parts[0]
+    subject = parts[1].strip()
+    body = body.strip()
+
+    try:
+        agentmail_client.send_email(to_addr, subject, body)
+        await _send(room_id, f"Sent to {to_addr}: {subject}")
+    except Exception as e:
+        log.error(f"Email send error: {e}")
+        await _send(room_id, f"Failed to send: {e}")
+
+
+async def cmd_myprofile(room_id: str, user_name: str):
+    info = style_learner.format_profile(user_name)
+    await _send(room_id, info)
+
+
+async def cmd_resetprofile(room_id: str, user_name: str):
+    result = style_learner.reset_profile(user_name)
+    await _send(room_id, result)
+
+
+async def cmd_buddy(room_id: str, args: str, user_name: str):
+    if args:
+        # Name the buddy
+        result = buddy.name_buddy(user_name, args)
+        await _send(room_id, result)
+    else:
+        info = buddy.format_buddy(user_name)
+        await _send(room_id, info)
+
+
+COMMANDS = {
+    "list": lambda rid, args, room, sender, uname: cmd_list(rid),
+    "add": lambda rid, args, room, sender, uname: cmd_add(rid, args, uname),
+    "bought": lambda rid, args, room, sender, uname: cmd_bought(rid, args, uname),
+    "stock": lambda rid, args, room, sender, uname: cmd_stock(rid),
+    "spent": lambda rid, args, room, sender, uname: cmd_spent(rid, args, uname),
+    "owe": lambda rid, args, room, sender, uname: cmd_owe(rid),
+    "summary": lambda rid, args, room, sender, uname: cmd_summary(rid),
+    "balance": lambda rid, args, room, sender, uname: cmd_balance(rid, room, sender),
+    "inbox": lambda rid, args, room, sender, uname: cmd_inbox(rid, room, sender),
+    "bills": lambda rid, args, room, sender, uname: cmd_bills(rid, room, sender),
+    "remind": lambda rid, args, room, sender, uname: cmd_remind(rid, args, sender, uname),
+    "reminders": lambda rid, args, room, sender, uname: cmd_my_reminders(rid, uname),
+    "cancel": lambda rid, args, room, sender, uname: cmd_cancel_reminder(rid, args),
+    "recipes": lambda rid, args, room, sender, uname: cmd_recipes(rid, args),
+    "recipe": lambda rid, args, room, sender, uname: cmd_recipe(rid, args),
+    "briefing": lambda rid, args, room, sender, uname: cmd_briefing(rid),
+    "myprofile": lambda rid, args, room, sender, uname: cmd_myprofile(rid, uname),
+    "resetprofile": lambda rid, args, room, sender, uname: cmd_resetprofile(rid, uname),
+    "send": lambda rid, args, room, sender, uname: cmd_send_email(rid, args, room, sender),
+    "buddy": lambda rid, args, room, sender, uname: cmd_buddy(rid, args, uname),
+    "help": lambda rid, args, room, sender, uname: cmd_help(rid),
+}
+
+
+async def _download_matrix_file(mxc_url: str, filename: str, key=None, hashes=None, iv=None) -> str:
+    """Download a file from Matrix and return the local path. Decrypts if key provided."""
+    resp = await client.download(mxc_url)
+    if isinstance(resp, DownloadError):
+        raise RuntimeError(f"Download failed: {resp}")
+
+    data = resp.body
+    if key and hashes and iv:
+        from nio.crypto import decrypt_attachment
+        data = decrypt_attachment(data, key["k"], hashes["sha256"], iv)
+
+    tmp = tempfile.NamedTemporaryFile(delete=False, suffix=f"_{filename}")
+    tmp.write(data)
+    tmp.close()
+    return tmp.name
+
+
+async def _handle_receipt_image(room_id: str, user_name: str, local_path: str):
+    """Parse a receipt image and present results."""
+    try:
+        receipt_data = ai.parse_receipt_image(local_path)
+        store = receipt_data.get("store", "Unknown")
+        total = receipt_data.get("total", 0)
+        items = receipt_data.get("items", [])
+
+        summary = f"**Receipt from {store}** -- ${total:.2f}\n"
+        for item in items[:15]:
+            summary += f"  - {item.get('name', '?')}: ${item.get('price', 0):.2f}\n"
+        if len(items) > 15:
+            summary += f"  ...and {len(items) - 15} more items\n"
+        summary += f"\nWant me to log this to Firefly? (say **yes** or **log it**)"
+        await _send(room_id, summary)
+
+        _pending_receipts[room_id] = {
+            "store": store, "total": total, "items": items, "user": user_name,
+        }
+    except Exception as e:
+        log.error(f"Receipt parse failed: {e}")
+        await _send(room_id, f"I got the image but couldn't parse it as a receipt. Error: {e}")
+
+
+async def _handle_pdf(room_id: str, user_name: str, local_path: str):
+    """Parse a PDF (bank statement) and present results."""
+    try:
+        import firefly
+        result = ai.parse_bank_statement(local_path)
+        transactions = result.get("transactions", [])
+        account = result.get("account", "Unknown")
+        period = result.get("period", "")
+        total_in = result.get("total_deposits", 0)
+        total_out = result.get("total_withdrawals", 0)
+
+        # Detect which Firefly account this maps to (check account name + filename + raw text)
+        raw_text = result.get("_raw_text", "")
+        acct_id, acct_type = firefly.detect_account(account, local_path, raw_text)
+        acct_label = "credit card" if acct_type == "liability" else "bank account"
+
+        summary = f"**{account}** -- {period}\n"
+        summary += f"Detected as: **{acct_label}** (Firefly account #{acct_id})\n"
+        summary += f"Deposits: ${total_in:.2f} | Withdrawals: ${total_out:.2f}\n\n"
+        if transactions:
+            summary += f"**{len(transactions)} transactions found:**\n"
+            for tx in transactions[:20]:
+                amt = tx.get('amount', 0)
+                sign = "+" if tx.get('type') == 'deposit' else "-"
+                summary += f"  {sign}${abs(amt):.2f} -- {tx.get('description', '?')} ({tx.get('date', '')})\n"
+            if len(transactions) > 20:
+                summary += f"  ...and {len(transactions) - 20} more\n"
+        summary += f"\nWant me to log these to Firefly? (say **yes** or **log it**)"
+        await _send(room_id, summary)
+
+        _pending_receipts[room_id] = {
+            "type": "bank_statement", "transactions": transactions,
+            "account": account, "user": user_name,
+            "account_id": acct_id, "account_type": acct_type,
+        }
+    except Exception as e:
+        log.error(f"Bank statement parse failed: {e}")
+        await _send(room_id, f"I got the PDF but couldn't parse it. Error: {e}")
+
+
+async def on_encrypted_image(room: MatrixRoom, event: RoomEncryptedImage):
+    """Handle encrypted image messages (receipts, photos)."""
+    if event.sender == client.user_id or not _first_sync_done:
+        return
+    user_name = _matrix_user_to_name(event.sender)
+    room_id = room.room_id
+    filename = event.body or "image.jpg"
+    log.info(f"Encrypted image from {user_name}: {filename}")
+    import time as _time
+    _recent_file_rooms[room_id] = _time.time()
+
+    try:
+        local_path = await _download_matrix_file(event.url, filename, event.key, event.hashes, event.iv)
+        await _handle_receipt_image(room_id, user_name, local_path)
+    except Exception as e:
+        log.error(f"Failed to process encrypted image: {e}")
+        await _send(room_id, f"Couldn't process that image: {e}")
+    finally:
+        if 'local_path' in locals() and os.path.exists(local_path):
+            os.unlink(local_path)
+
+
+async def on_encrypted_file(room: MatrixRoom, event: RoomEncryptedFile):
+    """Handle encrypted file messages (PDFs)."""
+    if event.sender == client.user_id or not _first_sync_done:
+        return
+    user_name = _matrix_user_to_name(event.sender)
+    room_id = room.room_id
+    filename = event.body or "file"
+
+    if not filename.lower().endswith(".pdf"):
+        log.debug(f"Ignoring non-PDF encrypted file: {filename}")
+        return
+
+    log.info(f"Encrypted PDF from {user_name}: {filename}")
+    import time as _time
+    _recent_file_rooms[room_id] = _time.time()
+    await _send(room_id, f"Got **{filename}** -- processing...")
+
+    try:
+        local_path = await _download_matrix_file(event.url, filename, event.key, event.hashes, event.iv)
+        await _handle_pdf(room_id, user_name, local_path)
+    except Exception as e:
+        log.error(f"Failed to process encrypted PDF: {e}")
+        await _send(room_id, f"Couldn't process that PDF: {e}")
+    finally:
+        if 'local_path' in locals() and os.path.exists(local_path):
+            os.unlink(local_path)
+
+
+async def on_image(room: MatrixRoom, event: RoomMessageImage):
+    """Handle unencrypted image messages."""
+    if event.sender == client.user_id or not _first_sync_done:
+        return
+    user_name = _matrix_user_to_name(event.sender)
+    room_id = room.room_id
+    filename = event.body or "image.jpg"
+    log.info(f"Image from {user_name}: {filename}")
+
+    try:
+        local_path = await _download_matrix_file(event.url, filename)
+        await _handle_receipt_image(room_id, user_name, local_path)
+    except Exception as e:
+        log.error(f"Failed to process image: {e}")
+        await _send(room_id, f"Couldn't process that image: {e}")
+    finally:
+        if 'local_path' in locals() and os.path.exists(local_path):
+            os.unlink(local_path)
+
+
+async def on_file(room: MatrixRoom, event: RoomMessageFile):
+    """Handle unencrypted file messages."""
+    if event.sender == client.user_id or not _first_sync_done:
+        return
+    user_name = _matrix_user_to_name(event.sender)
+    room_id = room.room_id
+    filename = event.body or "file"
+
+    if not filename.lower().endswith(".pdf"):
+        log.debug(f"Ignoring non-PDF file: {filename}")
+        return
+
+    log.info(f"PDF from {user_name}: {filename}")
+    await _send(room_id, f"Got **{filename}** -- processing...")
+
+    try:
+        local_path = await _download_matrix_file(event.url, filename)
+        await _handle_pdf(room_id, user_name, local_path)
+    except Exception as e:
+        log.error(f"Failed to process PDF: {e}")
+        await _send(room_id, f"Couldn't process that PDF: {e}")
+    finally:
+        if 'local_path' in locals() and os.path.exists(local_path):
+            os.unlink(local_path)
+
+
+async def on_message(room: MatrixRoom, event: RoomMessageText):
+    """Handle incoming text messages."""
+    global _first_sync_done
+
+    # Ignore messages from ourselves
+    if event.sender == client.user_id:
+        return
+
+    # Ignore messages from before we started (initial sync)
+    if not _first_sync_done:
+        return
+
+    text = event.body.strip()
+    if not text:
+        return
+
+    sender = event.sender
+    user_name = _matrix_user_to_name(sender)
+    room_id = room.room_id
+
+    # Check for pending receipt/statement confirmation
+    if room_id in _pending_receipts:
+        lower_confirm = text.lower().strip()
+        confirm_words = ("yes", "y", "log it", "log them", "yep", "yeah", "do it", "go ahead", "sure")
+        deny_words = ("no", "n", "nah", "nope", "cancel", "skip", "don't", "nevermind")
+        is_confirm = any(w in lower_confirm.split() or lower_confirm.startswith(w) for w in confirm_words)
+        is_deny = any(w in lower_confirm.split() or lower_confirm.startswith(w) for w in deny_words)
+        if is_confirm and not is_deny:
+            pending = _pending_receipts.pop(room_id)
+            try:
+                if pending.get("type") == "bank_statement":
+                    import firefly
+                    acct_id = pending.get("account_id", 1)
+                    acct_type = pending.get("account_type", "asset")
+                    logged_w = 0
+                    logged_d = 0
+                    for tx in pending.get("transactions", []):
+                        tx_type = tx.get("type", "withdrawal")
+                        firefly.log_transaction(
+                            description=tx.get("description", "Unknown"),
+                            amount=tx.get("amount", 0),
+                            category=tx.get("category", "Other"),
+                            destination_name=tx.get("description", "Unknown"),
+                            tx_date=tx.get("date"),
+                            tx_type=tx_type,
+                            source_id=acct_id,
+                            account_type=acct_type,
+                        )
+                        if tx_type == "deposit":
+                            logged_d += 1
+                        else:
+                            logged_w += 1
+                    acct_name = pending.get("account", "Unknown")
+                    await _send(room_id, f"Logged {logged_w} withdrawals and {logged_d} deposits to **{acct_name}** in Firefly.")
+                else:
+                    import firefly
+                    tx_id = firefly.log_receipt(
+                        store=pending["store"],
+                        total=pending["total"],
+                        items=pending.get("items"),
+                    )
+                    await _send(room_id, f"Logged ${pending['total']:.2f} at {pending['store']} to Firefly.")
+            except Exception as e:
+                log.error(f"Firefly log failed: {e}")
+                await _send(room_id, f"Failed to log to Firefly: {e}")
+            return
+        elif is_deny:
+            _pending_receipts.pop(room_id)
+            await _send(room_id, "No problem, skipped.")
+            return
+
+    # Check for commands (! prefix or / prefix)
+    if text.startswith("!") or text.startswith("/"):
+        parts = text[1:].split(None, 1)
+        cmd = parts[0].lower()
+        args = parts[1] if len(parts) > 1 else ""
+
+        handler = COMMANDS.get(cmd)
+        if handler:
+            try:
+                await handler(room_id, args, room, sender, user_name)
+            except Exception as e:
+                log.error(f"Command error ({cmd}): {e}")
+                await _send(room_id, f"Something went wrong with that command.")
+            return
+
+    # Don't respond to short acknowledgements
+    lower = text.lower().strip()
+    ack_words = {"ok", "okay", "k", "thanks", "thank you", "thx", "ty",
+                 "cool", "got it", "sure", "yep", "yup", "np", "alright",
+                 "sounds good", "perfect", "great", "nice", "good"}
+    if lower.rstrip("!.,") in ack_words:
+        return
+
+    # Quick pattern matching (same as Telegram bot)
+    list_triggers = ("what do we need", "grocery list", "shopping list", "what's on the list",
+                     "show me the list", "what do we have to buy", "what do we need to buy",
+                     "what's on the grocery", "show the list", "what we need",
+                     "can you show me the grocery", "send me the list", "send the list",
+                     "what are we getting", "what should we get")
+    if any(trigger in lower for trigger in list_triggers):
+        await cmd_list(room_id)
+        return
+
+    if lower.startswith("add "):
+        item = text[4:].strip()
+        if item:
+            db.add_shopping_item(item, requested_by=user_name)
+            await _send(room_id, f"Added {item} to the list!")
+            return
+
+    if lower.startswith("bought ") or lower.startswith("got "):
+        item = text.split(" ", 1)[1].strip()
+        if item and db.mark_item_bought(item, bought_by=user_name):
+            await _send(room_id, f"Marked {item} as bought!")
+            return
+
+    # Skip AI response if a file is being processed in this room (text + file arrive separately)
+    import time as _time
+    file_time = _recent_file_rooms.get(room_id, 0)
+    if _time.time() - file_time < 30:
+        log.debug(f"Skipping AI response — file being processed in {room_id}")
+        return
+
+    # Group chat engagement scoring — should Frank respond?
+    is_dm = _is_private(room)
+    should_respond, score = humanize.should_respond_in_group(text, room_id, is_dm)
+    if not should_respond:
+        return
+
+    # Fall through to AI — use batcher to collect rapid-fire messages
+    await _batcher.add(
+        chat_id=room_id,
+        message=text,
+        user_name=user_name,
+        callback=_handle_ai_message,
+        room_id=room_id,
+        room=room,
+        sender=sender,
+    )
+
+
+async def _handle_ai_message(text: str, user_name: str, room_id: str,
+                              room: MatrixRoom, sender: str):
+    """Process a (possibly batched) message through AI with human-like timing."""
+    try:
+        is_dm = _is_private(room)
+        chat_id = f"matrix_{room_id}"
+
+        # Show typing indicator while AI thinks
+        try:
+            await client.room_typing(room_id, typing_state=True, timeout=30000)
+        except Exception:
+            pass
+
+        reply = None
+        actions = []
+
+        # Check for ULTRAPLAN (complex planning requests)
+        if ultraplan.should_ultraplan(text):
+            await _send(room_id, "Let me think about that properly...")
+            try:
+                await client.room_typing(room_id, typing_state=True, timeout=60000)
+            except Exception:
+                pass
+            plan_result = await asyncio.get_event_loop().run_in_executor(
+                None, ultraplan.run_plan, text, "", user_name
+            )
+            if plan_result:
+                reply = plan_result
+
+        # Check for parallel coordinator (multi-source requests)
+        elif coordinator.should_use_parallel(text):
+            tasks = coordinator.get_full_status_tasks()
+            results = await coordinator.run_parallel(tasks)
+            combined = coordinator.build_combined_context(results)
+            # Feed combined context to AI for a coherent summary
+            result = ai.handle_message(
+                text, user_name=user_name, is_private=is_dm,
+                chat_id=chat_id, extra_context=combined
+            )
+            reply = result["reply"]
+            actions = result.get("actions", [])
+
+        # Normal AI handling
+        if reply is None:
+            result = ai.handle_message(text, user_name=user_name, is_private=is_dm, chat_id=chat_id)
+            reply = result["reply"]
+            actions = result.get("actions", [])
+
+        for action in actions:
+            act = action.get("action")
+            item = action.get("item", "")
+            if act == "add" and item:
+                db.add_shopping_item(item, requested_by=user_name)
+            elif act == "bought" and item:
+                db.mark_item_bought(item, bought_by=user_name)
+                db.record_event(item, "bought", note=f"Bought by {user_name}")
+            elif act == "remove" and item:
+                db.remove_shopping_item(item)
+            elif act == "remind":
+                remind_text = action.get("time", "") + " " + action.get("message", "")
+                remind_at, remind_msg = reminders.parse_reminder_time(remind_text)
+                if remind_at and remind_msg:
+                    reminders.add_reminder(user_name, sender, remind_msg, remind_at)
+                elif action.get("message"):
+                    reminders.add_reminder(user_name, sender, action["message"],
+                                          datetime.now() + timedelta(hours=1))
+            elif act == "send_message":
+                to_user = action.get("to", "").lower()
+                msg_text = action.get("message", "")
+                if to_user in config.FAMILY_MEMBERS and msg_text:
+                    target_matrix_id = config.FAMILY_MEMBERS[to_user].get("matrix_id")
+                    if target_matrix_id:
+                        try:
+                            await _send_to_user(target_matrix_id, msg_text)
+                            log.info(f"Matrix DM sent to {to_user}: {msg_text[:50]}")
+                        except Exception as e:
+                            log.error(f"Failed to send Matrix DM to {to_user}: {e}")
+            elif act == "log_spend":
+                store = action.get("store", "Unknown")
+                amount = action.get("amount", 0)
+                if amount:
+                    db.log_spend(store, float(amount))
+                    try:
+                        firefly.log_receipt(store, float(amount))
+                    except Exception as e:
+                        log.warning(f"Firefly log failed: {e}")
+            elif act == "send_email":
+                to_addr = action.get("to", "")
+                subject = action.get("subject", "")
+                body = action.get("body", "")
+                if to_addr and subject and body:
+                    try:
+                        agentmail_client.send_email(to_addr, subject, body)
+                        log.info(f"Email sent to {to_addr}: {subject}")
+                    except Exception as e:
+                        log.error(f"Email send failed: {e}")
+            elif act == "followup":
+                topic = action.get("topic", "")
+                question = action.get("question", "")
+                hours = action.get("hours", 24)
+                if topic and question:
+                    episodes.schedule_followup(user_name, topic, question, delay_hours=float(hours))
+
+        # Store episode summary for this interaction
+        if reply:
+            episodes.store_episode(
+                user_name=user_name,
+                summary=f"{user_name} said: {text[:100]}. Frank replied about: {reply[:100]}",
+                topics=[w for w in text.lower().split() if len(w) > 4][:5],
+                chat_id=room_id,
+            )
+
+        if reply:
+            # Human-like delay before sending
+            await humanize.human_delay(text, reply)
+
+            # Stop typing indicator
+            try:
+                await client.room_typing(room_id, typing_state=False)
+            except Exception:
+                pass
+
+            # Split long responses into chunks with pauses
+            chunks = humanize.chunk_response(reply)
+            for i, chunk in enumerate(chunks):
+                if i > 0:
+                    # Pause between chunks, show typing again
+                    try:
+                        await client.room_typing(room_id, typing_state=True, timeout=10000)
+                    except Exception:
+                        pass
+                    await asyncio.sleep(random.uniform(1.5, 3.0))
+                    try:
+                        await client.room_typing(room_id, typing_state=False)
+                    except Exception:
+                        pass
+                await _send(room_id, chunk)
+
+            humanize.mark_participated(room_id)
+            conversation_log.log_interaction(user_name, text, reply)
+            conversation_log.extract_and_save_learnings(user_name, text, reply)
+            mem0_memory.add_conversation(user_name, text, reply)
+
+            # Style learning — log interaction and mark previous as engaged
+            style_learner.mark_engaged(user_name)  # This message means they engaged with last response
+            style_learner.log_interaction(user_name, text, reply)
+
+            # Periodically update profile with LLM
+            if style_learner.should_update_profile(user_name):
+                try:
+                    style_learner.update_profile_with_llm(
+                        user_name,
+                        lambda prompt: ai._chat(
+                            [{"role": "user", "content": prompt}],
+                            max_tokens=500,
+                        )
+                    )
+                except Exception as e:
+                    log.debug(f"Style profile update failed: {e}")
+
+            # Buddy interaction
+            try:
+                buddy_result = buddy.interact(user_name)
+                buddy_msg = buddy.get_interaction_message(buddy_result, user_name)
+                if buddy_msg:
+                    await asyncio.sleep(1.0)
+                    await _send(room_id, buddy_msg)
+            except Exception as e:
+                log.debug(f"Buddy error: {e}")
+    except Exception as e:
+        log.error(f"AI error: {e}")
+        try:
+            await client.room_typing(room_id, typing_state=False)
+        except Exception:
+            pass
+        await _send(room_id, humanize.get_error_response())
+
+
+# ─── Scheduled Job Support ───
+
+async def send_to_family_group(text: str):
+    """Send a message to the Matrix family group room."""
+    if client and config.MATRIX_FAMILY_ROOM_ID:
+        await _send(config.MATRIX_FAMILY_ROOM_ID, text)
+
+
+async def send_to_user_by_name(name: str, text: str):
+    """Send a DM to a family member by name."""
+    member = config.FAMILY_MEMBERS.get(name.lower())
+    if member and member.get("matrix_id") and client:
+        await _send_to_user(member["matrix_id"], text)
+
+
+# ─── External API for other services ───
+
+async def send_alert(text: str, room_id: str = None, image_b64: str = None):
+    """Send an alert message to a Matrix room. Used by external services like UniFi webhook."""
+    target_room = room_id or config.MATRIX_FAMILY_ROOM_ID
+    if not client or not target_room:
+        return
+
+    if image_b64:
+        try:
+            import base64
+            # Strip data URI prefix if present
+            if "," in image_b64[:50]:
+                image_b64 = image_b64.split(",", 1)[1]
+            image_b64 = image_b64.strip().replace("\n", "").replace("\r", "").replace(" ", "")
+            img_data = base64.b64decode(image_b64)
+
+            # Upload to Synapse
+            resp, _ = await client.upload(
+                io.BytesIO(img_data),
+                content_type="image/jpeg",
+                filename="alert.jpg",
+                filesize=len(img_data),
+            )
+
+            if hasattr(resp, "content_uri"):
+                # Send image message
+                content = {
+                    "msgtype": "m.image",
+                    "body": text,
+                    "url": resp.content_uri,
+                    "info": {
+                        "mimetype": "image/jpeg",
+                        "size": len(img_data),
+                    },
+                }
+                await client.room_send(target_room, "m.room.message", content)
+                # Also send text caption
+                await _send(target_room, text)
+                return
+        except Exception as e:
+            log.warning(f"Matrix image upload failed: {e}, falling back to text")
+
+    await _send(target_room, text)
+
+
+# ─── Reminder Delivery ───
+
+async def deliver_matrix_reminders():
+    """Check for due reminders and deliver via Matrix if the ID is a Matrix user."""
+    due = reminders.get_due_reminders()
+    for r in due:
+        target = r["telegram_id"]  # field name is legacy, stores Matrix ID too
+        if target.startswith("@") and ":" in target:
+            # This is a Matrix user ID
+            try:
+                msg = f"Hey {r['user_name'].title()}! Reminder:\n\n{r['message']}"
+                await _send_to_user(target, msg)
+                reminders.mark_delivered(r["id"])
+                log.info(f"Matrix reminder delivered to {r['user_name']}: {r['message']}")
+            except Exception as e:
+                log.error(f"Matrix reminder delivery failed: {e}")
+
+
+# ─── Client Lifecycle ───
+
+async def start(loop=None):
+    """Start the Matrix client. Call from the main event loop."""
+    global client, _first_sync_done
+
+    homeserver = config.MATRIX_HOMESERVER
+    user_id = config.MATRIX_BOT_USER
+    password = os.environ.get("MATRIX_BOT_PASSWORD", "")
+
+    if not password:
+        log.warning("MATRIX_BOT_PASSWORD not set, Matrix client disabled")
+        return
+
+    # E2E encryption store
+    store_path = Path.home() / "family-bot" / "matrix_store"
+    store_path.mkdir(parents=True, exist_ok=True)
+
+    # Persist device_id so we reuse the same one across restarts
+    device_id_file = store_path / "device_id"
+    saved_device_id = None
+    if device_id_file.exists():
+        saved_device_id = device_id_file.read_text().strip()
+        log.info(f"Reusing saved device ID: {saved_device_id}")
+
+    client_config = AsyncClientConfig(
+        store_name="matrix_store",
+        store_sync_tokens=True,
+        encryption_enabled=True,
+    )
+
+    client = AsyncClient(
+        homeserver,
+        user_id,
+        device_id=saved_device_id,
+        store_path=str(store_path),
+        config=client_config,
+    )
+
+    # Login (device_id is set on the client constructor)
+    resp = await client.login(password, device_name="FrankBot")
+    if not isinstance(resp, LoginResponse):
+        log.error(f"Matrix login failed: {resp}")
+        return
+
+    # Save device_id for next restart
+    if not saved_device_id or saved_device_id != resp.device_id:
+        device_id_file.write_text(resp.device_id)
+        log.info(f"Saved new device ID: {resp.device_id}")
+
+    log.info(f"Matrix logged in as {resp.user_id} (device: {resp.device_id})")
+
+    # Upload encryption keys to server so other clients can encrypt for us
+    if client.should_upload_keys:
+        key_resp = await client.keys_upload()
+        log.info(f"Uploaded encryption keys: {getattr(key_resp, 'signed_curve25519_count', '?')} one-time keys")
+
+    # Debug: catch-all event callback
+    async def on_any_event(room, event):
+        log.info(f"Matrix event: {type(event).__name__} from {getattr(event, 'sender', '?')} in {room.display_name}")
+
+    client.add_event_callback(on_any_event, Event)
+
+    # Register message callbacks
+    client.add_event_callback(on_message, RoomMessageText)
+    client.add_event_callback(on_image, RoomMessageImage)
+    client.add_event_callback(on_file, RoomMessageFile)
+    client.add_event_callback(on_encrypted_image, RoomEncryptedImage)
+    client.add_event_callback(on_encrypted_file, RoomEncryptedFile)
+
+    # Auto-join on invite
+    async def on_invite(room, event):
+        log.info(f"Matrix invite to {room.room_id}, auto-joining")
+        await client.join(room.room_id)
+
+    # Handle undecryptable messages
+    async def on_megolm(room, event):
+        log.warning(f"Undecryptable message from {event.sender} in {room.display_name}: {event.session_id}")
+
+    from nio import InviteMemberEvent
+    client.add_event_callback(on_invite, InviteMemberEvent)
+    client.add_event_callback(on_megolm, MegolmEvent)
+
+    # Do initial sync to catch up (we ignore messages from this)
+    await client.sync(timeout=10000, full_state=True)
+    _first_sync_done = True
+    log.info("Matrix initial sync done, now listening for messages")
+
+    # Accept any pending invites from initial sync
+    for room_id in list(client.invited_rooms.keys()):
+        log.info(f"Auto-joining pending invite: {room_id}")
+        await client.join(room_id)
+
+    # Trust all known devices
+    _trust_all_devices()
+
+    # Auto-join invited rooms
+    if hasattr(client, 'rooms'):
+        log.info(f"Matrix joined {len(client.rooms)} rooms")
+
+    # Start sync loop
+    log.info("Matrix sync loop starting")
+    while True:
+        try:
+            resp = await client.sync(timeout=30000)
+            log.debug(f"Matrix sync: {resp.next_batch[:20] if hasattr(resp, 'next_batch') else resp}")
+
+            # Upload keys if needed (replenish one-time keys)
+            if client.should_upload_keys:
+                await client.keys_upload()
+
+            # Trust any new devices we discover
+            _trust_all_devices()
+        except Exception as e:
+            log.error(f"Matrix sync error: {e}", exc_info=True)
+            await asyncio.sleep(5)
+
+
+async def stop():
+    """Gracefully stop the Matrix client."""
+    global client
+    if client:
+        await client.close()
+        log.info("Matrix client stopped")
