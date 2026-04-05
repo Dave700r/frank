@@ -4,15 +4,29 @@ import json
 import base64
 import httpx
 from pathlib import Path
+import config
 import db
 import memory
-import firefly
-import email_client
-import web_search
 import recipes as recipe_db
-import mem0_memory
 import episodes
 import humanize
+
+# Optional modules
+firefly = None
+email_client = None
+web_search = None
+mem0_memory = None
+
+if config.FIREFLY_ENABLED:
+    import firefly
+if config.EMAIL_ENABLED:
+    import email_client
+if config.MEM0_ENABLED:
+    import mem0_memory
+try:
+    import web_search
+except ImportError:
+    pass
 from frank_persona import FRANK_CHARACTER, CAPABILITIES_PROMPT
 
 OPENROUTER_BASE = "https://openrouter.ai/api/v1"
@@ -100,7 +114,7 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
     context = get_inventory_context()
     # Search both memory systems
     chroma_memories = memory.search(text, n_results=3)
-    mem0_memories = mem0_memory.search(text, user_id=user_name.lower() if user_name else "family", limit=5)
+    mem0_memories = mem0_memory.search(text, user_id=user_name.lower() if user_name else "family", limit=5) if mem0_memory else []
     # Combine: episodes first, then Mem0 facts, then Chroma raw context
     memories_parts = []
     episode_context = episodes.recall_recent_for_context(user_name, limit=3)
@@ -119,7 +133,7 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
                        "how do", "how does", "how to", "tell me about", "what happened",
                        "news", "weather in", "price of", "recipe for", "fact about",
                        "random fact", "fun fact", "did you know")
-    if any(trigger in lower for trigger in search_triggers):
+    if web_search and any(trigger in lower for trigger in search_triggers):
         try:
             results = web_search.search(text)
             if results.get("answer"):
@@ -157,11 +171,10 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
     email_keywords = ("email", "inbox", "mail", "unread", "message from", "bill",
                       "reply to", "respond to", "send email", "that email", "read it",
                       "my email", "your email", "proton", "agentmail", "finances")
-    if any(kw in lower for kw in email_keywords):
+    if email_client and any(kw in lower for kw in email_keywords):
         try:
             # Owner's email inbox
-            import config as app_config
-            owner_nick = app_config.FAMILY_MEMBERS[app_config.OWNER]["nickname"]
+            owner_nick = config.FAMILY_MEMBERS[config.OWNER]["nickname"]
             proton_emails = email_client.get_unread(limit=5)
             proton_section = ""
             if proton_emails:
@@ -173,16 +186,21 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
                 proton_section = f"\n{owner_nick.upper()}'S INBOX: No unread emails."
 
             # Bot's own email inbox
-            import agentmail_client
-            frank_emails = agentmail_client.get_recent_with_content(limit=3)
-            bot_address = app_config.AGENTMAIL_ADDRESS or "bot email"
-            frank_section = f"\n{app_config.BOT_NAME.upper()}'S INBOX ({bot_address}):\n{frank_emails}"
+            frank_section = ""
+            if config.AGENTMAIL_ENABLED:
+                try:
+                    import agentmail_client
+                    frank_emails = agentmail_client.get_recent_with_content(limit=3)
+                    bot_address = config.AGENTMAIL_ADDRESS or "bot email"
+                    frank_section = f"\n{config.BOT_NAME.upper()}'S INBOX ({bot_address}):\n{frank_emails}"
+                except Exception:
+                    pass
 
             email_context = proton_section + "\n" + frank_section
-            email_context += f"\n\nYou have access to BOTH inboxes. {owner_nick}'s inbox is for reading their mail and tracking finances. Your inbox is for sending emails as {app_config.BOT_NAME}. To reply to {owner_nick}'s emails, use the send_email action."
+            email_context += f"\n\nYou have access to email. {owner_nick}'s inbox is for reading their mail and tracking finances. To reply to {owner_nick}'s emails, use the send_email action."
         except Exception as e:
             email_context = f"\nEmail system error: {e}"
-    if any(kw in lower for kw in finance_keywords):
+    if firefly and any(kw in lower for kw in finance_keywords):
         try:
             summary = firefly.get_monthly_summary()
             recent = firefly.get_recent_transactions(limit=5)

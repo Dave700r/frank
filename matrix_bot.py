@@ -16,14 +16,23 @@ from apscheduler.triggers.interval import IntervalTrigger
 import config
 import db
 import briefing
-import firefly
-import email_client
-import voice_api
 import conversation_log
 import reminders
 import episodes
 import dream
 import matrix_client
+
+# Optional modules
+firefly = None
+email_client = None
+voice_api = None
+
+if config.FIREFLY_ENABLED:
+    import firefly
+if config.EMAIL_ENABLED:
+    import email_client
+if config.VOICE_ENABLED:
+    import voice_api
 
 logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
@@ -98,6 +107,8 @@ async def job_low_stock_alert():
 
 async def job_bill_scan():
     """8:00 AM - Scan for new bills, log to Firefly if parseable."""
+    if not email_client:
+        return
     try:
         bills = email_client.get_bills(limit=5)
         new_bills = []
@@ -119,12 +130,13 @@ async def job_bill_scan():
                         if key in payee.lower():
                             category = cat
                             break
-                    firefly.log_transaction(
-                        description=payee,
-                        amount=parsed["amount"],
-                        category=category,
-                        destination_name=payee,
-                    )
+                    if firefly:
+                        firefly.log_transaction(
+                            description=payee,
+                            amount=parsed["amount"],
+                            category=category,
+                            destination_name=payee,
+                        )
                 except Exception as e:
                     log.warning(f"Firefly bill log failed: {e}")
 
@@ -212,8 +224,9 @@ async def async_main():
     scheduler.start()
     log.info("Scheduler started with %d jobs", len(scheduler.get_jobs()))
 
-    # Start voice API
-    await voice_api.start_voice_api()
+    # Start voice API (optional)
+    if voice_api:
+        await voice_api.start_voice_api()
 
     # Start Matrix client
     async def _run_matrix():

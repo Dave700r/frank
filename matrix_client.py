@@ -45,13 +45,24 @@ import coordinator
 import ultraplan
 import style_learner
 import briefing
-import firefly
-import email_client
-import agentmail_client
 import conversation_log
-import mem0_memory
 import reminders
 import recipes
+
+# Optional modules — only import if enabled
+firefly = None
+email_client = None
+agentmail_client = None
+mem0_memory = None
+
+if config.FIREFLY_ENABLED:
+    import firefly
+if config.EMAIL_ENABLED:
+    import email_client
+if config.AGENTMAIL_ENABLED:
+    import agentmail_client
+if config.MEM0_ENABLED:
+    import mem0_memory
 
 log = logging.getLogger("family-bot.matrix")
 log.setLevel(logging.DEBUG)
@@ -211,10 +222,11 @@ async def cmd_spent(room_id: str, args: str, user_name: str):
 
     store = parts[1]
     db.log_spend(store, amount)
-    try:
-        firefly.log_receipt(store, amount)
-    except Exception as e:
-        log.warning(f"Firefly log failed: {e}")
+    if firefly:
+        try:
+            firefly.log_receipt(store, amount)
+        except Exception as e:
+            log.warning(f"Firefly log failed: {e}")
     await _send(room_id, f"Logged ${amount:.2f} at {store}")
 
 
@@ -238,6 +250,9 @@ async def cmd_owe(room_id: str):
 
 
 async def cmd_summary(room_id: str):
+    if not firefly:
+        await _send(room_id, "Finance tracking is not configured.")
+        return
     try:
         data = firefly.get_monthly_summary()
         lines = [f"SPENDING THIS MONTH: ${data['total']:.2f}\n"]
@@ -250,6 +265,9 @@ async def cmd_summary(room_id: str):
 
 
 async def cmd_balance(room_id: str, room: MatrixRoom, sender: str):
+    if not firefly:
+        await _send(room_id, "Finance tracking is not configured.")
+        return
     if not _is_private(room):
         await _send(room_id, "I'll DM you the balances -- that's private info.")
         try:
@@ -274,6 +292,9 @@ async def cmd_balance(room_id: str, room: MatrixRoom, sender: str):
 
 
 async def cmd_inbox(room_id: str, room: MatrixRoom, sender: str):
+    if not email_client:
+        await _send(room_id, "Email is not configured.")
+        return
     user_name = _matrix_user_to_name(sender)
     if user_name != config.OWNER:
         await _send(room_id, "Email access is owner-only.")
@@ -306,18 +327,19 @@ async def cmd_inbox(room_id: str, room: MatrixRoom, sender: str):
         else:
             lines.append("No unread emails.\n")
 
-        # Frank's AgentMail inbox
-        frank_mail = agentmail_client.get_unread(limit=5)
-        lines.append(f"FRANK'S EMAIL (frankai@agentmail.to)\n")
-        if frank_mail:
-            lines.append(f"{len(frank_mail)} recent:\n")
-            for e in frank_mail:
-                lines.append(f"From: {e['from']}")
-                lines.append(f"Subject: {e['subject']}")
-                lines.append(f"Date: {e['date'][:16]}")
-                lines.append("")
-        else:
-            lines.append("No emails.")
+        # Bot's own email inbox
+        if agentmail_client:
+            frank_mail = agentmail_client.get_unread(limit=5)
+            lines.append(f"{config.BOT_NAME.upper()}'S EMAIL ({config.AGENTMAIL_ADDRESS})\n")
+            if frank_mail:
+                lines.append(f"{len(frank_mail)} recent:\n")
+                for e in frank_mail:
+                    lines.append(f"From: {e['from']}")
+                    lines.append(f"Subject: {e['subject']}")
+                    lines.append(f"Date: {e['date'][:16]}")
+                    lines.append("")
+            else:
+                lines.append("No emails.")
 
         msg = "\n".join(lines)
         await send_msg(msg)
@@ -329,6 +351,9 @@ async def cmd_inbox(room_id: str, room: MatrixRoom, sender: str):
 
 
 async def cmd_bills(room_id: str, room: MatrixRoom, sender: str):
+    if not email_client:
+        await _send(room_id, "Email is not configured.")
+        return
     user_name = _matrix_user_to_name(sender)
     if user_name != config.OWNER:
         await _send(room_id, "Bill access is owner-only.")
@@ -532,6 +557,9 @@ async def cmd_help(room_id: str):
 
 async def cmd_send_email(room_id: str, args: str, room: MatrixRoom, sender: str):
     """Send an email. Usage: !send <to> <subject> | <body>"""
+    if not agentmail_client:
+        await _send(room_id, "Email sending is not configured.")
+        return
     user_name = _matrix_user_to_name(sender)
     if user_name != config.OWNER:
         await _send(room_id, "Email sending is owner-only.")
@@ -660,7 +688,7 @@ async def _handle_pdf(room_id: str, user_name: str, local_path: str):
 
         # Detect which Firefly account this maps to (check account name + filename + raw text)
         raw_text = result.get("_raw_text", "")
-        acct_id, acct_type = firefly.detect_account(account, local_path, raw_text)
+        acct_id, acct_type = firefly.detect_account(account, local_path, raw_text) if firefly else (None, "asset")
         acct_label = "credit card" if acct_type == "liability" else "bank account"
 
         summary = f"**{account}** -- {period}\n"
@@ -819,6 +847,9 @@ async def on_message(room: MatrixRoom, event: RoomMessageText):
                     acct_type = pending.get("account_type", "asset")
                     logged_w = 0
                     logged_d = 0
+                    if not firefly:
+                        await _send(room_id, "Finance tracking is not configured — can't log these.")
+                        return
                     for tx in pending.get("transactions", []):
                         tx_type = tx.get("type", "withdrawal")
                         firefly.log_transaction(
@@ -838,7 +869,9 @@ async def on_message(room: MatrixRoom, event: RoomMessageText):
                     acct_name = pending.get("account", "Unknown")
                     await _send(room_id, f"Logged {logged_w} withdrawals and {logged_d} deposits to **{acct_name}** in Firefly.")
                 else:
-                    import firefly
+                    if not firefly:
+                        await _send(room_id, "Finance tracking is not configured — can't log this.")
+                        return
                     tx_id = firefly.log_receipt(
                         store=pending["store"],
                         total=pending["total"],
@@ -1007,15 +1040,16 @@ async def _handle_ai_message(text: str, user_name: str, room_id: str,
                 amount = action.get("amount", 0)
                 if amount:
                     db.log_spend(store, float(amount))
-                    try:
-                        firefly.log_receipt(store, float(amount))
-                    except Exception as e:
-                        log.warning(f"Firefly log failed: {e}")
+                    if firefly:
+                        try:
+                            firefly.log_receipt(store, float(amount))
+                        except Exception as e:
+                            log.warning(f"Firefly log failed: {e}")
             elif act == "send_email":
                 to_addr = action.get("to", "")
                 subject = action.get("subject", "")
                 body = action.get("body", "")
-                if to_addr and subject and body:
+                if to_addr and subject and body and agentmail_client:
                     try:
                         agentmail_client.send_email(to_addr, subject, body)
                         log.info(f"Email sent to {to_addr}: {subject}")
@@ -1066,7 +1100,8 @@ async def _handle_ai_message(text: str, user_name: str, room_id: str,
             humanize.mark_participated(room_id)
             conversation_log.log_interaction(user_name, text, reply)
             conversation_log.extract_and_save_learnings(user_name, text, reply)
-            mem0_memory.add_conversation(user_name, text, reply)
+            if mem0_memory:
+                mem0_memory.add_conversation(user_name, text, reply)
 
             # Style learning — log interaction and mark previous as engaged
             style_learner.mark_engaged(user_name)  # This message means they engaged with last response
