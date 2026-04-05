@@ -111,6 +111,7 @@ immich:
   enabled: false
   base_url: "http://localhost:2283/api"
   api_key: ""  # Create in Immich: Profile > Account Settings > API Keys
+  skip_ssl_verify: false  # Set true if using self-signed certs
 
 # --- Mem0 Memory (optional) ---
 # Semantic memory using Mem0 with Ollama embeddings.

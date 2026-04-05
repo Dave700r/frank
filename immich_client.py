@@ -12,30 +12,44 @@ log = logging.getLogger("family-bot.immich")
 _immich = config._cfg.get("immich", {})
 BASE_URL = _immich.get("base_url", "").rstrip("/")
 API_KEY = _immich.get("api_key", "")
+_skip_ssl = _immich.get("skip_ssl_verify", False)
 
 _headers = {"x-api-key": API_KEY, "Accept": "application/json"}
 
 
 def _get(endpoint, **kwargs):
     """GET request to Immich API."""
-    r = httpx.get(f"{BASE_URL}{endpoint}", headers=_headers, timeout=15, **kwargs)
+    r = httpx.get(f"{BASE_URL}{endpoint}", headers=_headers, timeout=15, verify=not _skip_ssl, **kwargs)
     r.raise_for_status()
     return r.json()
 
 
 def _post(endpoint, json_data=None, **kwargs):
     """POST request to Immich API."""
-    r = httpx.post(f"{BASE_URL}{endpoint}", headers=_headers, json=json_data, timeout=15, **kwargs)
+    r = httpx.post(f"{BASE_URL}{endpoint}", headers=_headers, json=json_data, timeout=15, verify=not _skip_ssl, **kwargs)
     r.raise_for_status()
     return r.json()
 
 
 def search_photos(query, limit=5):
-    """Smart search for photos by text (uses CLIP embeddings).
-    Examples: 'beach sunset', 'birthday cake', 'dog in the snow'"""
+    """Search for photos by text. Tries CLIP smart search first, falls back to metadata filename search."""
+    # Try smart search (CLIP) first
     try:
         data = _post("/search/smart", json_data={
             "query": query,
+            "page": 1,
+            "size": limit,
+        })
+        assets = data.get("assets", {}).get("items", [])
+        if assets:
+            return [_format_asset(a) for a in assets]
+    except Exception as e:
+        log.debug(f"Smart search unavailable, falling back to metadata: {e}")
+
+    # Fallback: search by filename
+    try:
+        data = _post("/search/metadata", json_data={
+            "originalFileName": query,
             "page": 1,
             "size": limit,
         })
@@ -137,6 +151,7 @@ def download_thumbnail(asset_id) -> str:
             headers={"x-api-key": API_KEY},
             params={"size": "preview"},
             timeout=30,
+            verify=not _skip_ssl,
         )
         r.raise_for_status()
 
@@ -158,6 +173,7 @@ def download_original(asset_id) -> str:
             f"{BASE_URL}/assets/{asset_id}/original",
             headers={"x-api-key": API_KEY},
             timeout=60,
+            verify=not _skip_ssl,
         )
         r.raise_for_status()
 
