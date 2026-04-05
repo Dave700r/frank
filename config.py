@@ -10,8 +10,13 @@ _CONFIG_DIR = Path(__file__).parent
 _CONFIG_FILE = _CONFIG_DIR / "config.yaml"
 
 if not _CONFIG_FILE.exists():
-    print("ERROR: config.yaml not found. Copy config.yaml.example to config.yaml and fill in your values.")
-    sys.exit(1)
+    if sys.stdin.isatty():
+        print("No config.yaml found — starting setup wizard...\n")
+        import setup
+        setup.run()
+    else:
+        print("ERROR: config.yaml not found. Run 'python setup.py' or copy config.yaml.example to config.yaml.")
+        sys.exit(1)
 
 with open(_CONFIG_FILE) as f:
     _cfg = yaml.safe_load(f)

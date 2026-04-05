@@ -35,7 +35,13 @@ cd frank
 cp config.yaml.example config.yaml
 ```
 
-Edit `config.yaml` with your Matrix homeserver, bot account, and family members. See the comments in the file for guidance.
+Run the setup wizard to generate your config:
+
+```bash
+python setup.py
+```
+
+Or edit `config.yaml` manually — see the comments in the example file for guidance.
 
 ### 2. Set environment variables
 
