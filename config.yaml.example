@@ -47,6 +47,15 @@ location:
   longitude: -79.38
   timezone: "America/New_York"
 
+# --- Built-in Features ---
+# All enabled by default. Disable what you don't need.
+grocery:
+  enabled: true   # Shopping lists, inventory tracking, low-stock alerts
+recipes:
+  enabled: true   # Family recipe database
+buddy:
+  enabled: true   # Tamagotchi companion pets
+
 # --- AI ---
 # Uses OpenRouter (OpenAI-compatible). Set OPENROUTER_API_KEY env var.
 ai:

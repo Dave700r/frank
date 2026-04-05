@@ -36,20 +36,20 @@ from nio import (
 from nio.store import SqliteStore
 
 import config
-import db
 import ai
 import humanize
 import episodes
-import buddy
 import coordinator
 import ultraplan
 import style_learner
 import briefing
 import conversation_log
 import reminders
-import recipes
 
 # Optional modules — only import if enabled
+db = None
+buddy = None
+recipes = None
 firefly = None
 email_client = None
 agentmail_client = None
@@ -57,6 +57,12 @@ mem0_memory = None
 gmail_client = None
 immich_client = None
 
+if config.GROCERY_ENABLED:
+    import db
+if config.RECIPES_ENABLED:
+    import recipes
+if config.BUDDY_ENABLED:
+    import buddy
 if config.FIREFLY_ENABLED:
     import firefly
 if config.EMAIL_ENABLED:
@@ -542,42 +548,70 @@ async def cmd_briefing(room_id: str):
 
 
 async def cmd_help(room_id: str):
-    await _send(room_id,
-        "HEY! I'm Frank. Here's what I can do:\n\n"
-        "GROCERIES\n"
-        "!list - Shopping list\n"
-        "!add <item> - Add to list\n"
-        "!bought <item> - Mark as bought\n"
-        "!stock - Full inventory\n\n"
-        "MONEY\n"
-        "!spent <amount> <store> - Log a purchase\n"
-        "!summary - Monthly spending breakdown\n"
-        "!balance - Account balances (DM only)\n"
-        "!owe - Who owes who\n\n"
+    sections = [f"HEY! I'm {config.BOT_NAME}. Here's what I can do:\n"]
+
+    if config.GROCERY_ENABLED:
+        sections.append(
+            "GROCERIES\n"
+            "!list - Shopping list\n"
+            "!add <item> - Add to list\n"
+            "!bought <item> - Mark as bought\n"
+            "!stock - Full inventory\n"
+            "!spent <amount> <store> - Log a purchase\n"
+            "!owe - Who owes who"
+        )
+
+    if config.FIREFLY_ENABLED:
+        sections.append(
+            "MONEY\n"
+            "!summary - Monthly spending breakdown\n"
+            "!balance - Account balances (DM only)"
+        )
+
+    sections.append(
         "REMINDERS\n"
         "!remind <when> <what> - Set a reminder\n"
         "!reminders - My pending reminders\n"
-        "!cancel <#> - Cancel a reminder\n\n"
-        "RECIPES\n"
-        "!recipes - List all recipes\n"
-        "!recipes <search> - Search recipes\n"
-        "!recipe <#> - Show full recipe\n\n"
-        "EMAIL (DM only)\n"
-        "!inbox - Check emails\n"
-        "!send <to> <subject> | <body> - Send email\n"
-        "!bills - Recent bills\n\n"
-        "PHOTOS\n"
-        "!photos <search> - Search family photos\n"
-        "!albums - List photo albums\n"
-        "!people - Recognized people in photos\n\n"
-        "BUDDY\n"
-        "!buddy - Check your companion pet\n"
-        "!buddy <name> - Name your buddy\n\n"
+        "!cancel <#> - Cancel a reminder"
+    )
+
+    if config.RECIPES_ENABLED:
+        sections.append(
+            "RECIPES\n"
+            "!recipes - List all recipes\n"
+            "!recipes <search> - Search recipes\n"
+            "!recipe <#> - Show full recipe"
+        )
+
+    if config.EMAIL_ENABLED or config.GMAIL_ENABLED:
+        email_help = "EMAIL (DM only)\n!inbox - Check emails\n!bills - Recent bills"
+        if config.AGENTMAIL_ENABLED:
+            email_help += "\n!send <to> <subject> | <body> - Send email"
+        sections.append(email_help)
+
+    if config.IMMICH_ENABLED:
+        sections.append(
+            "PHOTOS\n"
+            "!photos <search> - Search family photos\n"
+            "!albums - List photo albums\n"
+            "!people - Recognized people in photos"
+        )
+
+    if config.BUDDY_ENABLED:
+        sections.append(
+            "BUDDY\n"
+            "!buddy - Check your companion pet\n"
+            "!buddy <name> - Name your buddy"
+        )
+
+    sections.append(
         "OTHER\n"
         "!briefing - Morning briefing\n"
         "!help - This message\n\n"
         "Or just talk to me naturally."
     )
+
+    await _send(room_id, "\n\n".join(sections))
 
 
 # ─── Message Router ───
@@ -684,32 +718,63 @@ async def cmd_people(room_id: str):
     await _send(room_id, "\n".join(lines))
 
 
+# Build command registry — only register enabled features
 COMMANDS = {
-    "list": lambda rid, args, room, sender, uname: cmd_list(rid),
-    "add": lambda rid, args, room, sender, uname: cmd_add(rid, args, uname),
-    "bought": lambda rid, args, room, sender, uname: cmd_bought(rid, args, uname),
-    "stock": lambda rid, args, room, sender, uname: cmd_stock(rid),
-    "spent": lambda rid, args, room, sender, uname: cmd_spent(rid, args, uname),
-    "owe": lambda rid, args, room, sender, uname: cmd_owe(rid),
-    "summary": lambda rid, args, room, sender, uname: cmd_summary(rid),
-    "balance": lambda rid, args, room, sender, uname: cmd_balance(rid, room, sender),
-    "inbox": lambda rid, args, room, sender, uname: cmd_inbox(rid, room, sender),
-    "bills": lambda rid, args, room, sender, uname: cmd_bills(rid, room, sender),
+    # Always available
     "remind": lambda rid, args, room, sender, uname: cmd_remind(rid, args, sender, uname),
     "reminders": lambda rid, args, room, sender, uname: cmd_my_reminders(rid, uname),
     "cancel": lambda rid, args, room, sender, uname: cmd_cancel_reminder(rid, args),
-    "recipes": lambda rid, args, room, sender, uname: cmd_recipes(rid, args),
-    "recipe": lambda rid, args, room, sender, uname: cmd_recipe(rid, args),
     "briefing": lambda rid, args, room, sender, uname: cmd_briefing(rid),
     "myprofile": lambda rid, args, room, sender, uname: cmd_myprofile(rid, uname),
     "resetprofile": lambda rid, args, room, sender, uname: cmd_resetprofile(rid, uname),
-    "send": lambda rid, args, room, sender, uname: cmd_send_email(rid, args, room, sender),
-    "buddy": lambda rid, args, room, sender, uname: cmd_buddy(rid, args, uname),
-    "photos": lambda rid, args, room, sender, uname: cmd_photos(rid, args),
-    "albums": lambda rid, args, room, sender, uname: cmd_albums(rid),
-    "people": lambda rid, args, room, sender, uname: cmd_people(rid),
     "help": lambda rid, args, room, sender, uname: cmd_help(rid),
 }
+
+# Grocery / inventory
+if config.GROCERY_ENABLED:
+    COMMANDS.update({
+        "list": lambda rid, args, room, sender, uname: cmd_list(rid),
+        "add": lambda rid, args, room, sender, uname: cmd_add(rid, args, uname),
+        "bought": lambda rid, args, room, sender, uname: cmd_bought(rid, args, uname),
+        "stock": lambda rid, args, room, sender, uname: cmd_stock(rid),
+        "spent": lambda rid, args, room, sender, uname: cmd_spent(rid, args, uname),
+        "owe": lambda rid, args, room, sender, uname: cmd_owe(rid),
+    })
+
+# Finance
+if config.FIREFLY_ENABLED:
+    COMMANDS.update({
+        "summary": lambda rid, args, room, sender, uname: cmd_summary(rid),
+        "balance": lambda rid, args, room, sender, uname: cmd_balance(rid, room, sender),
+    })
+
+# Email
+if config.EMAIL_ENABLED or config.GMAIL_ENABLED:
+    COMMANDS.update({
+        "inbox": lambda rid, args, room, sender, uname: cmd_inbox(rid, room, sender),
+        "bills": lambda rid, args, room, sender, uname: cmd_bills(rid, room, sender),
+    })
+if config.AGENTMAIL_ENABLED:
+    COMMANDS["send"] = lambda rid, args, room, sender, uname: cmd_send_email(rid, args, room, sender)
+
+# Recipes
+if config.RECIPES_ENABLED:
+    COMMANDS.update({
+        "recipes": lambda rid, args, room, sender, uname: cmd_recipes(rid, args),
+        "recipe": lambda rid, args, room, sender, uname: cmd_recipe(rid, args),
+    })
+
+# Buddy
+if config.BUDDY_ENABLED:
+    COMMANDS["buddy"] = lambda rid, args, room, sender, uname: cmd_buddy(rid, args, uname)
+
+# Photos
+if config.IMMICH_ENABLED:
+    COMMANDS.update({
+        "photos": lambda rid, args, room, sender, uname: cmd_photos(rid, args),
+        "albums": lambda rid, args, room, sender, uname: cmd_albums(rid),
+        "people": lambda rid, args, room, sender, uname: cmd_people(rid),
+    })
 
 
 async def _download_matrix_file(mxc_url: str, filename: str, key=None, hashes=None, iv=None) -> str:
@@ -998,14 +1063,14 @@ async def on_message(room: MatrixRoom, event: RoomMessageText):
         await cmd_list(room_id)
         return
 
-    if lower.startswith("add "):
+    if db and lower.startswith("add "):
         item = text[4:].strip()
         if item:
             db.add_shopping_item(item, requested_by=user_name)
             await _send(room_id, f"Added {item} to the list!")
             return
 
-    if lower.startswith("bought ") or lower.startswith("got "):
+    if db and (lower.startswith("bought ") or lower.startswith("got ")):
         item = text.split(" ", 1)[1].strip()
         if item and db.mark_item_bought(item, bought_by=user_name):
             await _send(room_id, f"Marked {item} as bought!")
@@ -1087,12 +1152,12 @@ async def _handle_ai_message(text: str, user_name: str, room_id: str,
         for action in actions:
             act = action.get("action")
             item = action.get("item", "")
-            if act == "add" and item:
+            if act == "add" and item and db:
                 db.add_shopping_item(item, requested_by=user_name)
-            elif act == "bought" and item:
+            elif act == "bought" and item and db:
                 db.mark_item_bought(item, bought_by=user_name)
                 db.record_event(item, "bought", note=f"Bought by {user_name}")
-            elif act == "remove" and item:
+            elif act == "remove" and item and db:
                 db.remove_shopping_item(item)
             elif act == "remind":
                 remind_text = action.get("time", "") + " " + action.get("message", "")
@@ -1116,7 +1181,7 @@ async def _handle_ai_message(text: str, user_name: str, room_id: str,
             elif act == "log_spend":
                 store = action.get("store", "Unknown")
                 amount = action.get("amount", 0)
-                if amount:
+                if amount and db:
                     db.log_spend(store, float(amount))
                     if firefly:
                         try:

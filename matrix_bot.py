@@ -14,7 +14,6 @@ from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
 
 import config
-import db
 import briefing
 import conversation_log
 import reminders
@@ -23,10 +22,13 @@ import dream
 import matrix_client
 
 # Optional modules
+db = None
 firefly = None
 email_client = None
 voice_api = None
 
+if config.GROCERY_ENABLED:
+    import db
 if config.FIREFLY_ENABLED:
     import firefly
 if config.EMAIL_ENABLED:
@@ -56,6 +58,8 @@ async def job_morning_briefing():
 
 async def job_grocery_push():
     """9:00 AM - Push shopping list to family group."""
+    if not db:
+        return
     items = db.get_shopping_list()
     if not items:
         return
@@ -85,6 +89,8 @@ async def job_grocery_push():
 
 async def job_low_stock_alert():
     """6:00 PM - Alert about low stock items."""
+    if not db:
+        return
     low = db.get_low_stock_items()
     alerts = db.get_consumption_alerts()
 

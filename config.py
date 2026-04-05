@@ -74,6 +74,11 @@ TIMEZONE = _loc.get("timezone", "UTC")
 # --- AI ---
 AI_MODEL = _cfg.get("ai", {}).get("model", "anthropic/claude-haiku-4.5")
 
+# --- Features ---
+GROCERY_ENABLED = _cfg.get("grocery", {}).get("enabled", True)
+RECIPES_ENABLED = _cfg.get("recipes", {}).get("enabled", True)
+BUDDY_ENABLED = _cfg.get("buddy", {}).get("enabled", True)
+
 # --- Firefly III ---
 _firefly = _cfg.get("firefly", {})
 FIREFLY_ENABLED = _firefly.get("enabled", False)

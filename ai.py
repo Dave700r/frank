@@ -5,10 +5,16 @@ import base64
 import httpx
 from pathlib import Path
 import config
-import db
 import memory
-import recipes as recipe_db
 import episodes
+
+db = None
+recipe_db = None
+
+if config.GROCERY_ENABLED:
+    import db
+if config.RECIPES_ENABLED:
+    import recipes as recipe_db
 import humanize
 
 # Optional modules
@@ -88,6 +94,8 @@ def _chat(messages, system=None, model=None, max_tokens=300):
 
 def get_inventory_context():
     """Build a context string from current inventory state."""
+    if not db:
+        return "Grocery tracking is not enabled."
     items = db.get_inventory()
     shopping = db.get_shopping_list()
 
@@ -149,7 +157,7 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
     # Add recipe context if recipe-related
     recipe_context = ""
     recipe_keywords = ("recipe", "recipes", "cook", "cooking", "make", "bake", "baking", "dinner idea", "what should we eat")
-    if any(kw in lower for kw in recipe_keywords):
+    if recipe_db and any(kw in lower for kw in recipe_keywords):
         try:
             all_recipes = recipe_db.list_recipes()
             if all_recipes:
