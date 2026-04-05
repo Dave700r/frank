@@ -30,13 +30,24 @@ def get_shopping_list():
 
 
 def add_shopping_item(name, category="other", qty=None, requested_by=None):
+    """Add item to shopping list. Returns (added: bool, existing_name: str|None).
+    If a similar item is already on the list, returns (False, existing_name)."""
     conn = get_inventory_conn()
+    # Check for existing similar item (case-insensitive fuzzy match)
+    existing = conn.execute(
+        "SELECT name FROM shopping_list WHERE bought=0 AND LOWER(name) LIKE ?",
+        (f"%{name.lower()}%",),
+    ).fetchone()
+    if existing:
+        conn.close()
+        return False, existing["name"]
     conn.execute(
         "INSERT INTO shopping_list (name, category, qty, requested_by) VALUES (?, ?, ?, ?)",
         (name, category, qty, requested_by),
     )
     conn.commit()
     conn.close()
+    return True, None
 
 
 def remove_shopping_item(name):

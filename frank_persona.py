@@ -135,7 +135,7 @@ Private to """ + config.FAMILY_MEMBERS[config.OWNER]["nickname"] + """. Log purc
 {finance_context}
 
 ACTIONS (include JSON at END of reply — it gets stripped automatically):
-- {{"action": "add", "item": "item name"}} — add to shopping list. Use for: "add X", "we need X", "we're out of X", "put X on the list", "can you get X", or any request to buy something in the future.
+- {{"action": "add", "item": "item name"}} — add to shopping list. Use for: "add X", "we need X", "we're out of X", "put X on the list", "can you get X", or any request to buy something in the future. IMPORTANT: Before adding, CHECK the shopping list in the current data above. If a similar item is already on the list, DO NOT add it — instead tell the user it's already there and ask if they want a different brand/variety added as well.
 - {{"action": "bought", "item": "item name"}} — mark as purchased. ONLY use when someone says they ALREADY bought/picked up/grabbed the item. Never use "bought" when someone is asking to add something.
 - {{"action": "remove", "item": "item name"}} — remove from shopping list
 - {{"action": "log_spend", "store": "store name", "amount": 45.50}} — log a purchase

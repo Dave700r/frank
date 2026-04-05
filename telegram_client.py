@@ -94,8 +94,11 @@ async def cmd_add(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text("Usage: /add <item name>")
         return
     item = " ".join(ctx.args)
-    db.add_shopping_item(item, requested_by=_user_name(update))
-    await update.message.reply_text(f"Added {item} to the list!")
+    added, existing = db.add_shopping_item(item, requested_by=_user_name(update))
+    if added:
+        await update.message.reply_text(f"Added {item} to the list!")
+    else:
+        await update.message.reply_text(f"'{existing}' is already on the list.")
 
 
 async def cmd_bought(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
@@ -427,7 +430,9 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         act = action.get("action")
         item = action.get("item", "")
         if act == "add" and item and db:
-            db.add_shopping_item(item, requested_by=user_name)
+            added, existing = db.add_shopping_item(item, requested_by=user_name)
+            if not added and reply:
+                reply = reply.rstrip() + f"\n\n(Heads up — '{existing}' is already on the list.)"
         elif act == "bought" and item and db:
             db.mark_item_bought(item, bought_by=user_name)
         elif act == "remove" and item and db:

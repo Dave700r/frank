@@ -201,8 +201,11 @@ async def cmd_add(room_id: str, args: str, user_name: str):
     if not args:
         await _send(room_id, "Usage: !add <item name>")
         return
-    db.add_shopping_item(args, requested_by=user_name)
-    await _send(room_id, f"Added {args} to the list!")
+    added, existing = db.add_shopping_item(args, requested_by=user_name)
+    if added:
+        await _send(room_id, f"Added {args} to the list!")
+    else:
+        await _send(room_id, f"'{existing}' is already on the list.")
 
 
 async def cmd_bought(room_id: str, args: str, user_name: str):
@@ -1053,22 +1056,23 @@ async def on_message(room: MatrixRoom, event: RoomMessageText):
     if lower.rstrip("!.,") in ack_words:
         return
 
-    # Quick pattern matching (same as Telegram bot)
-    list_triggers = ("what do we need", "grocery list", "shopping list", "what's on the list",
-                     "show me the list", "what do we have to buy", "what do we need to buy",
-                     "what's on the grocery", "show the list", "what we need",
-                     "can you show me the grocery", "send me the list", "send the list",
-                     "what are we getting", "what should we get")
-    if any(trigger in lower for trigger in list_triggers):
-        await cmd_list(room_id)
-        return
-
-    if db and lower.startswith("add "):
-        item = text[4:].strip()
-        if item:
-            db.add_shopping_item(item, requested_by=user_name)
-            await _send(room_id, f"Added {item} to the list!")
-            return
+    # Check for add intent BEFORE list triggers — "add X to the grocery list" should add, not show list
+    add_patterns = ("add ", "put ", "we need ", "can you add ", "please add ", "could you add ")
+    if db:
+        for pat in add_patterns:
+            if lower.startswith(pat) or f" {pat}" in lower:
+                # Let AI handle it — it's better at extracting the item name from natural language
+                break
+        else:
+            # No add intent found — check for list triggers
+            list_triggers = ("what do we need", "grocery list", "shopping list", "what's on the list",
+                             "show me the list", "what do we have to buy", "what do we need to buy",
+                             "what's on the grocery", "show the list", "what we need",
+                             "can you show me the grocery", "send me the list", "send the list",
+                             "what are we getting", "what should we get")
+            if any(trigger in lower for trigger in list_triggers):
+                await cmd_list(room_id)
+                return
 
     if db and (lower.startswith("bought ") or lower.startswith("got ")):
         item = text.split(" ", 1)[1].strip()
@@ -1153,7 +1157,9 @@ async def _handle_ai_message(text: str, user_name: str, room_id: str,
             act = action.get("action")
             item = action.get("item", "")
             if act == "add" and item and db:
-                db.add_shopping_item(item, requested_by=user_name)
+                added, existing = db.add_shopping_item(item, requested_by=user_name)
+                if not added and existing.lower() not in reply.lower():
+                    reply = reply.rstrip() + f"\n\n('{existing}' is already on the list — want me to add a different brand/variety too?)"
             elif act == "bought" and item and db:
                 db.mark_item_bought(item, bought_by=user_name)
                 db.record_event(item, "bought", note=f"Bought by {user_name}")
