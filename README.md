@@ -19,6 +19,7 @@ A self-hosted AI family assistant that lives in your Matrix chat. Frank manages 
 
 - **Python 3.12+** with async throughout
 - **Matrix** (end-to-end encrypted) via [matrix-nio](https://github.com/matrix-nio/matrix-nio)
+- **Telegram** (optional) via [python-telegram-bot](https://python-telegram-bot.org/) — can run alongside or instead of Matrix
 - **AI** via [OpenRouter](https://openrouter.ai/) (Claude Haiku by default, Gemini Flash for vision)
 - **Firefly III** for finance tracking (optional)
 - **Mem0** + Ollama for semantic memory (optional)
@@ -96,6 +97,7 @@ All configuration lives in `config.yaml`. Every feature is optional — disable 
 | Feature | Config flag | Required env vars | External service |
 |---------|------------|-------------------|-----------------|
 | Matrix chat | *(always on)* | `MATRIX_BOT_PASSWORD` | Matrix homeserver |
+| Telegram | `telegram.enabled` | `TELEGRAM_BOT_TOKEN` | Telegram BotFather |
 | AI responses | *(always on)* | `OPENROUTER_API_KEY` | OpenRouter |
 | Finance | `firefly.enabled` | `FIREFLY_TOKEN` | Firefly III |
 | Owner email (IMAP) | `email.enabled` | `EMAIL_USER`, `EMAIL_PASS` | IMAP server |
@@ -112,6 +114,7 @@ All configuration lives in `config.yaml`. Every feature is optional — disable 
 ```
 matrix_bot.py          Entry point, scheduler
 matrix_client.py       Matrix E2E client, command routing, message handling
+telegram_client.py     Telegram bot client (optional)
 ai.py                  AI layer (OpenRouter), context building, vision
 config.py              YAML config loader
 frank_persona.py       Personality, generated from config

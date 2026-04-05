@@ -61,6 +61,13 @@ buddy:
 ai:
   model: "anthropic/claude-haiku-4.5"
 
+# --- Telegram (optional) ---
+# Alternative/additional chat interface. Set TELEGRAM_BOT_TOKEN env var.
+# Get a token from @BotFather on Telegram.
+telegram:
+  enabled: false
+  family_group_id: ""  # Telegram group chat ID (negative number)
+
 # --- Firefly III (optional) ---
 # Personal finance manager. Set FIREFLY_TOKEN env var.
 firefly:

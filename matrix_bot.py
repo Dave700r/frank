@@ -27,6 +27,8 @@ firefly = None
 email_client = None
 voice_api = None
 
+telegram_client = None
+
 if config.GROCERY_ENABLED:
     import db
 if config.FIREFLY_ENABLED:
@@ -35,6 +37,8 @@ if config.EMAIL_ENABLED:
     import email_client
 if config.VOICE_ENABLED:
     import voice_api
+if config.TELEGRAM_ENABLED:
+    import telegram_client
 
 logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
@@ -234,6 +238,11 @@ async def async_main():
     if voice_api:
         await voice_api.start_voice_api()
 
+    # Start Telegram bot (optional)
+    if telegram_client:
+        await telegram_client.start()
+        log.info("Telegram bot starting")
+
     # Start Matrix client
     async def _run_matrix():
         try:
@@ -252,6 +261,8 @@ async def async_main():
     finally:
         conversation_log.flush_buffer()
         log.info("Conversation log flushed on shutdown")
+        if telegram_client:
+            await telegram_client.stop()
         await matrix_client.stop()
 
 

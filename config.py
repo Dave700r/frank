@@ -61,9 +61,11 @@ DAILY_LOGS_DIR = _resolve_path("daily_logs_dir", "daily-logs")
 MEMORY_DIR = _resolve_path("memory_dir", "memory")
 BRIEFING_SCRIPTS_DIR = WORKSPACE
 
-# Legacy
+# --- Telegram (optional) ---
+_telegram = _cfg.get("telegram", {})
+TELEGRAM_ENABLED = _telegram.get("enabled", False)
 TELEGRAM_TOKEN_FILE = _CONFIG_DIR / "telegram_token.txt"
-FAMILY_GROUP_ID = _cfg.get("telegram", {}).get("family_group_id", "")
+FAMILY_GROUP_ID = _telegram.get("family_group_id", "")
 
 # --- Location ---
 _loc = _cfg.get("location", {})

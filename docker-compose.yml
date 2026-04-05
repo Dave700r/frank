@@ -10,6 +10,7 @@ services:
       - MATRIX_BOT_PASSWORD=${MATRIX_BOT_PASSWORD}
       - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
       # Optional — uncomment as needed:
+      # - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN}
       # - FIREFLY_TOKEN=${FIREFLY_TOKEN}
       # - EMAIL_USER=${EMAIL_USER}
       # - EMAIL_PASS=${EMAIL_PASS}

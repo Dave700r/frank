@@ -6,6 +6,7 @@ APScheduler>=3.10,<4.0
 aiohttp>=3.9
 
 # Optional — comment out what you don't need
+python-telegram-bot>=21.0  # Telegram bot interface
 pdfplumber>=0.11                # PDF statement parsing
 agentmail>=0.1                  # Bot's own email (AgentMail service)
 mem0ai>=0.1                     # Semantic memory (requires Ollama)
