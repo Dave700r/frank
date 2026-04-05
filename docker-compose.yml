@@ -1,0 +1,19 @@
+services:
+  frank:
+    build: .
+    container_name: frank
+    restart: unless-stopped
+    volumes:
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+    environment:
+      - MATRIX_BOT_PASSWORD=${MATRIX_BOT_PASSWORD}
+      - OPENROUTER_API_KEY=${OPENROUTER_API_KEY}
+      # Optional — uncomment as needed:
+      # - FIREFLY_TOKEN=${FIREFLY_TOKEN}
+      # - EMAIL_USER=${EMAIL_USER}
+      # - EMAIL_PASS=${EMAIL_PASS}
+      # - AGENTMAIL_API_KEY=${AGENTMAIL_API_KEY}
+      # - TAVILY_API_KEY=${TAVILY_API_KEY}
+      # - TOMTOM_API_KEY=${TOMTOM_API_KEY}
+      # - CISTERN_API_URL=${CISTERN_API_URL}
