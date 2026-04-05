@@ -105,6 +105,16 @@ voice:
   host: "127.0.0.1"
   port: 5123
 
+# --- Briefing (optional) ---
+# Commute destinations for morning traffic report. Requires TOMTOM_API_KEY env var.
+briefing:
+  commutes: {}
+  # Example:
+  # commutes:
+  #   "Partner (Work)":
+  #     lat: 43.07
+  #     lon: -79.95
+
 # --- Persona ---
 # Customize Frank's personality. See persona.yaml.example for full customization.
 # If persona_file is not set, Frank uses a friendly default personality.

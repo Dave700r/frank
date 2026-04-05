@@ -1,4 +1,4 @@
-"""Email integration via Proton Bridge IMAP/SMTP.
+"""Email integration via IMAP/SMTP.
 Read-only by default. Send only when explicitly requested via DM."""
 import os
 import imaplib
@@ -152,7 +152,7 @@ def search_inbox(query, limit=10):
 
 
 def send_email(to, subject, body):
-    """Send an email as Dave. Only call from DM context."""
+    """Send an email as the owner. Only call from DM context."""
     msg = MIMEMultipart()
     msg["From"] = EMAIL_USER
     msg["To"] = to

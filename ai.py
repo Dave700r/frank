@@ -170,7 +170,7 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
     email_context = ""
     email_keywords = ("email", "inbox", "mail", "unread", "message from", "bill",
                       "reply to", "respond to", "send email", "that email", "read it",
-                      "my email", "your email", "proton", "agentmail", "finances")
+                      "my email", "your email", "finances")
     if email_client and any(kw in lower for kw in email_keywords):
         try:
             # Owner's email inbox

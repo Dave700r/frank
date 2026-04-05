@@ -1,12 +1,13 @@
-"""AgentMail integration for Frank.
-Replaces Proton Bridge with AgentMail API for cleaner email handling."""
+"""AgentMail integration — bot's own email inbox."""
 import os
 import logging
+import config
+
 from agentmail import AgentMail
 
 log = logging.getLogger("family-bot.agentmail")
 
-INBOX_ID = "frankai@agentmail.to"
+INBOX_ID = config.AGENTMAIL_ADDRESS
 
 _client = None
 

@@ -98,7 +98,7 @@ def _trust_all_devices():
 
 
 def _matrix_user_to_name(user_id: str) -> str:
-    """Convert @dave:matrix.levelitis.ca -> dave"""
+    """Convert @user:homeserver -> username via config lookup."""
     return config.MATRIX_ID_TO_NAME.get(user_id, user_id.split(":")[0].lstrip("@"))
 
 
@@ -406,7 +406,7 @@ async def cmd_remind(room_id: str, args: str, sender: str, user_name: str):
             "Examples:\n"
             "  !remind in 30 minutes check the oven\n"
             "  !remind tomorrow call the dentist\n"
-            "  !remind at 3pm pick up Emily"
+            "  !remind at 3pm pick up the kids"
         )
         return
 
