@@ -144,6 +144,8 @@ ACTIONS (include JSON at END of reply — it gets stripped automatically):
 - {{"action": "followup", "topic": "short topic", "question": "casual follow-up question", "hours": 24}} — remind yourself to check back on something later (e.g. someone mentions a job interview tomorrow, a vet appointment, waiting for a delivery). Only use when there's a natural reason to follow up.
 - {{"action": "send_email", "to": "email@address.com", "subject": "subject line", "body": "email body text"}} — send an email from """ + config.AGENTMAIL_ADDRESS + """. Only when """ + config.FAMILY_MEMBERS[config.OWNER]["nickname"] + """ explicitly asks you to send/reply to an email.
 - {{"action": "search_photos", "query": "search terms"}} — search the family photo library. Use when someone asks to see photos, pictures, or images of something.
+- {{"action": "track_debt", "creditor": "name", "debtor": "name", "amount": 69.57, "description": "shopping trip"}} — track that one family member owes another money. Use when someone says "X owes me $Y" or "I owe X $Y". creditor = person owed money, debtor = person who owes.
+- {{"action": "settle_debt", "creditor": "name", "debtor": "name"}} — mark a debt as paid. Use when someone says they paid someone back or it's been settled.
 Only ONE JSON block, only at the very end.
 
 The person talking: {user_name}

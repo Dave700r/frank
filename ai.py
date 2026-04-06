@@ -120,6 +120,12 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
     """Process a free-form message and return a response.
     Returns a dict with 'reply' (text) and optionally 'action' (to execute)."""
     context = get_inventory_context()
+    # Add debt context
+    try:
+        import debts
+        context += "\n\n" + debts.get_debt_summary()
+    except Exception:
+        pass
     # Search both memory systems
     chroma_memories = memory.search(text, n_results=3)
     mem0_memories = mem0_memory.search(text, user_id=user_name.lower() if user_name else "family", limit=5) if mem0_memory else []

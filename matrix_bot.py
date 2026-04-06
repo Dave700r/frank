@@ -20,6 +20,7 @@ import reminders
 import episodes
 import dream
 import matrix_client
+import debts
 
 # Optional modules
 db = None
@@ -159,6 +160,36 @@ async def job_bill_scan():
                 lines.append("")
             await matrix_client.send_to_user_by_name(config.OWNER, "\n".join(lines))
             log.info(f"Bill scan: {len(new_bills)} bills found and logged")
+
+        # Check for e-transfers that match open debts
+        try:
+            recent = email_client.get_recent("INBOX", limit=10)
+            for msg in recent:
+                subj = (msg.get("subject") or "").lower()
+                body = msg.get("body_preview", "")
+                if "e-transfer" in subj or "interac" in subj or "etransfer" in subj:
+                    import re
+                    amount_match = re.search(r'\$\s*([\d,]+\.?\d*)', body)
+                    if not amount_match:
+                        continue
+                    amount = float(amount_match.group(1).replace(",", ""))
+                    # Try to match sender name to a family member
+                    for name, member in config.FAMILY_MEMBERS.items():
+                        nick = member["nickname"].lower()
+                        if nick in body.lower() or name in body.lower():
+                            settled = debts.settle_by_etransfer(name, amount)
+                            if settled:
+                                creditor_nick = config.FAMILY_MEMBERS.get(settled["creditor"], {}).get("nickname", settled["creditor"].title())
+                                await matrix_client.send_to_user_by_name(
+                                    settled["creditor"],
+                                    f"Heads up — {member['nickname']} just sent ${amount:.2f} via e-transfer. "
+                                    f"I've marked that debt as settled. 👍"
+                                )
+                                log.info(f"E-transfer auto-settled: {name} -> {settled['creditor']} ${amount:.2f}")
+                            break
+        except Exception as e:
+            log.warning(f"E-transfer debt check failed: {e}")
+
     except Exception as e:
         log.error(f"Bill scan error: {e}")
 
@@ -189,6 +220,23 @@ async def job_check_reminders():
         await matrix_client.deliver_matrix_reminders()
     except Exception as e:
         log.warning(f"Matrix reminder check failed: {e}")
+
+    # Check for due debt reminders
+    try:
+        due_debts = debts.get_due_reminders()
+        for d in due_debts:
+            creditor_nick = config.FAMILY_MEMBERS.get(d["creditor"], {}).get("nickname", d["creditor"].title())
+            debtor_nick = config.FAMILY_MEMBERS.get(d["debtor"], {}).get("nickname", d["debtor"].title())
+            desc = f" for {d['description']}" if d.get("description") else ""
+            msg = (
+                f"Hey — {creditor_nick}'s still waiting on that "
+                f"${d['amount']:.2f}{desc}. Can you settle up when you get a chance?"
+            )
+            await matrix_client.send_to_user_by_name(d["debtor"], msg)
+            debts.advance_reminder(d["id"])
+            log.info(f"Debt reminder sent to {d['debtor']}: ${d['amount']:.2f} owed to {d['creditor']}")
+    except Exception as e:
+        log.warning(f"Debt reminder check failed: {e}")
 
     # Check for due follow-ups
     try:

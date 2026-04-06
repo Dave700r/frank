@@ -1212,6 +1212,28 @@ async def _handle_ai_message(text: str, user_name: str, room_id: str,
                         path = immich_client.download_thumbnail(results[0]["id"])
                         if path:
                             await _send_image(room_id, path, f"Photo: {query}")
+            elif act == "track_debt":
+                try:
+                    import debts
+                    creditor = action.get("creditor", "").lower()
+                    debtor_name = action.get("debtor", "").lower()
+                    amount = float(action.get("amount", 0))
+                    desc = action.get("description", "")
+                    if creditor and debtor_name and amount > 0:
+                        debts.add_debt(creditor, debtor_name, amount, desc)
+                        log.info(f"Debt tracked: {debtor_name} owes {creditor} ${amount:.2f}")
+                except Exception as e:
+                    log.error(f"Debt tracking failed: {e}")
+            elif act == "settle_debt":
+                try:
+                    import debts
+                    creditor = action.get("creditor", "").lower()
+                    debtor_name = action.get("debtor", "").lower()
+                    if creditor and debtor_name:
+                        debts.mark_paid(creditor=creditor, debtor=debtor_name)
+                        log.info(f"Debt settled: {debtor_name} -> {creditor}")
+                except Exception as e:
+                    log.error(f"Debt settle failed: {e}")
             elif act == "followup":
                 topic = action.get("topic", "")
                 question = action.get("question", "")
