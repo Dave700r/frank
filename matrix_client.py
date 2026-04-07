@@ -1562,12 +1562,19 @@ async def _handle_ai_message(text: str, user_name: str, room_id: str,
                         log.error(f"Email send failed: {e}")
             elif act == "search_photos":
                 query = action.get("query", "")
-                if query and immich_client:
-                    results = immich_client.search_photos(query, limit=3)
+                start_date = action.get("start_date", "")
+                end_date = action.get("end_date", "")
+                if immich_client and (query or start_date):
+                    if start_date:
+                        results = immich_client.search_by_date(start_date, end_date or None, limit=3)
+                        label = f"Photos from {start_date}" + (f" to {end_date}" if end_date else "")
+                    else:
+                        results = immich_client.search_photos(query, limit=3)
+                        label = f"Photo: {query}"
                     if results:
                         path = immich_client.download_thumbnail(results[0]["id"])
                         if path:
-                            await _send_image(room_id, path, f"Photo: {query}")
+                            await _send_image(room_id, path, label)
             elif act == "track_debt":
                 try:
                     import debts
