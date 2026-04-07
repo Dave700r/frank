@@ -93,8 +93,8 @@ def parse_reminder_time(text):
     now = datetime.now()
     lower = text.lower()
 
-    # "in X minutes/hours"
-    m = re.search(r'in\s+(\d+)\s*(min(?:ute)?s?|hours?|hrs?)', lower)
+    # "in X minutes/hours" or just "X minutes/hours"
+    m = re.search(r'(?:in\s+)?(\d+)\s*(min(?:ute)?s?|hours?|hrs?)', lower)
     if m:
         val = int(m.group(1))
         unit = m.group(2)
@@ -102,8 +102,8 @@ def parse_reminder_time(text):
             dt = now + timedelta(minutes=val)
         else:
             dt = now + timedelta(hours=val)
-        msg = re.sub(r'\s*in\s+\d+\s*(?:min(?:ute)?s?|hours?|hrs?)\s*', ' ', text).strip()
-        return dt, msg
+        msg = re.sub(r'\s*(?:in\s+)?\d+\s*(?:min(?:ute)?s?|hours?|hrs?)\s*', ' ', text).strip()
+        return dt, msg or "Timer done!"
 
     # "at HH:MM" or "at H PM/AM"
     m = re.search(r'at\s+(\d{1,2})(?::(\d{2}))?\s*(am|pm)?', lower)

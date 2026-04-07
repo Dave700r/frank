@@ -1165,13 +1165,28 @@ async def _handle_ai_message(text: str, user_name: str, room_id: str,
                 db.record_event(item, "bought", note=f"Bought by {user_name}")
             elif act == "remove" and item and db:
                 db.remove_shopping_item(item)
-            elif act == "remind":
-                remind_text = action.get("time", "") + " " + action.get("message", "")
+            elif act in ("remind", "timer"):
+                time_str = action.get("time", "")
+                msg = action.get("message", "") or "Timer done!"
+                remind_text = time_str + " " + msg
                 remind_at, remind_msg = reminders.parse_reminder_time(remind_text)
-                if remind_at and remind_msg:
-                    reminders.add_reminder(user_name, sender, remind_msg, remind_at)
-                elif action.get("message"):
-                    reminders.add_reminder(user_name, sender, action["message"],
+                if remind_at:
+                    reminders.add_reminder(user_name, sender, remind_msg or msg, remind_at)
+                    log.info(f"Reminder/timer set for {user_name} at {remind_at}: {remind_msg or msg}")
+                elif time_str:
+                    # Fallback: try parsing time alone
+                    import re
+                    m = re.search(r'(\d+)\s*(min|hour|hr)', time_str.lower())
+                    if m:
+                        val = int(m.group(1))
+                        unit = m.group(2)
+                        delta = timedelta(minutes=val) if "min" in unit else timedelta(hours=val)
+                        reminders.add_reminder(user_name, sender, msg, datetime.now() + delta)
+                        log.info(f"Timer set for {user_name} in {val} {unit}: {msg}")
+                    else:
+                        reminders.add_reminder(user_name, sender, msg, datetime.now() + timedelta(hours=1))
+                else:
+                    reminders.add_reminder(user_name, sender, msg,
                                           datetime.now() + timedelta(hours=1))
             elif act == "send_message":
                 to_user = action.get("to", "").lower()
