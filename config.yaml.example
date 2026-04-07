@@ -20,9 +20,24 @@ family:
     dave:
       matrix_id: "@dave:matrix.example.com"
       nickname: "Dad"
+      # Optional: per-member email scanning
+      # email:
+      #   type: "imap"           # "imap" or "gmail"
+      #   imap_host: "127.0.0.1"
+      #   imap_port: 1143
+      #   smtp_host: "127.0.0.1"
+      #   smtp_port: 1025
+      #   user: "dave@example.com"
+      #   pass_env: "DAVE_EMAIL_PASS"  # env var holding the password
     partner:
       matrix_id: "@partner:matrix.example.com"
       nickname: "Partner"
+      # Optional: Gmail for this member
+      # email:
+      #   type: "gmail"
+      #   user: "partner@gmail.com"
+      #   # Place gmail_token_partner.json next to config.yaml
+      #   # Run: python -c "import gmail_client; gmail_client.setup_for_user('partner')"
     # Add more members as needed:
     # child1:
     #   matrix_id: "@child1:matrix.example.com"

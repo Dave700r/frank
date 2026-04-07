@@ -36,6 +36,9 @@ if config.FIREFLY_ENABLED:
     import firefly
 if config.EMAIL_ENABLED:
     import email_client
+gmail_client = None
+if config.GMAIL_ENABLED:
+    import gmail_client
 if config.VOICE_ENABLED:
     import voice_api
 if config.TELEGRAM_ENABLED:
@@ -116,12 +119,18 @@ async def job_low_stock_alert():
     log.info("Low stock alert sent")
 
 
-async def job_bill_scan():
-    """8:00 AM - Scan for new bills, log to Firefly if parseable."""
-    if not email_client:
-        return
+async def _scan_email_for_member(member_name, client_mod, use_gmail=False):
+    """Scan one member's email for bills and e-transfers."""
+    nickname = config.FAMILY_MEMBERS.get(member_name, {}).get("nickname", member_name.title())
     try:
-        bills = email_client.get_bills(limit=5)
+        if use_gmail:
+            bills_raw = client_mod.get_bills(limit=5, member_name=member_name)
+            # Gmail returns snippet instead of body_preview
+            bills = [{"subject": b.get("subject", ""), "body_preview": b.get("snippet", ""),
+                       "from": b.get("from", "")} for b in bills_raw]
+        else:
+            bills = client_mod.get_bills(limit=5, member_name=member_name)
+
         new_bills = []
         for b in bills:
             parsed = email_client.parse_bill_email(b["subject"], b["body_preview"], b["from"])
@@ -149,49 +158,71 @@ async def job_bill_scan():
                             destination_name=payee,
                         )
                 except Exception as e:
-                    log.warning(f"Firefly bill log failed: {e}")
+                    log.warning(f"Firefly bill log failed for {member_name}: {e}")
 
         if new_bills:
-            lines = ["BILL ALERT\n"]
+            lines = [f"BILL ALERT\n"]
             for b in new_bills:
                 lines.append(f"  {b['payee']}: ${b['amount']:.2f}")
                 if b.get("due_date"):
                     lines.append(f"  Due: {b['due_date']}")
                 lines.append("")
-            await matrix_client.send_to_user_by_name(config.OWNER, "\n".join(lines))
-            log.info(f"Bill scan: {len(new_bills)} bills found and logged")
+            await matrix_client.send_to_user_by_name(member_name, "\n".join(lines))
+            log.info(f"Bill scan for {member_name}: {len(new_bills)} bills found")
 
-        # Check for e-transfers that match open debts
-        try:
-            recent = email_client.get_recent("INBOX", limit=10)
-            for msg in recent:
-                subj = (msg.get("subject") or "").lower()
-                body = msg.get("body_preview", "")
-                if "e-transfer" in subj or "interac" in subj or "etransfer" in subj:
-                    import re
-                    amount_match = re.search(r'\$\s*([\d,]+\.?\d*)', body)
-                    if not amount_match:
-                        continue
-                    amount = float(amount_match.group(1).replace(",", ""))
-                    # Try to match sender name to a family member
-                    for name, member in config.FAMILY_MEMBERS.items():
-                        nick = member["nickname"].lower()
-                        if nick in body.lower() or name in body.lower():
-                            settled = debts.settle_by_etransfer(name, amount)
-                            if settled:
-                                creditor_nick = config.FAMILY_MEMBERS.get(settled["creditor"], {}).get("nickname", settled["creditor"].title())
-                                await matrix_client.send_to_user_by_name(
-                                    settled["creditor"],
-                                    f"Heads up — {member['nickname']} just sent ${amount:.2f} via e-transfer. "
-                                    f"I've marked that debt as settled. 👍"
-                                )
-                                log.info(f"E-transfer auto-settled: {name} -> {settled['creditor']} ${amount:.2f}")
-                            break
-        except Exception as e:
-            log.warning(f"E-transfer debt check failed: {e}")
+        # Check for e-transfers (only for IMAP — Gmail uses snippet which may not have enough detail)
+        if not use_gmail:
+            try:
+                recent = client_mod.get_recent("INBOX", limit=10, member_name=member_name)
+                for msg in recent:
+                    subj = (msg.get("subject") or "").lower()
+                    body = msg.get("body_preview", "")
+                    if "e-transfer" in subj or "interac" in subj or "etransfer" in subj:
+                        import re
+                        amount_match = re.search(r'\$\s*([\d,]+\.?\d*)', body)
+                        if not amount_match:
+                            continue
+                        amount = float(amount_match.group(1).replace(",", ""))
+                        for name, member in config.FAMILY_MEMBERS.items():
+                            nick = member["nickname"].lower()
+                            if nick in body.lower() or name in body.lower():
+                                settled = debts.settle_by_etransfer(name, amount)
+                                if settled:
+                                    await matrix_client.send_to_user_by_name(
+                                        settled["creditor"],
+                                        f"Heads up — {member['nickname']} just sent ${amount:.2f} via e-transfer. "
+                                        f"I've marked that debt as settled."
+                                    )
+                                    log.info(f"E-transfer auto-settled: {name} -> {settled['creditor']} ${amount:.2f}")
+                                break
+            except Exception as e:
+                log.warning(f"E-transfer check failed for {member_name}: {e}")
 
     except Exception as e:
-        log.error(f"Bill scan error: {e}")
+        log.error(f"Bill scan error for {member_name}: {e}")
+
+
+async def job_bill_scan():
+    """8:00 AM - Scan all configured email accounts for bills."""
+    scanned = set()
+
+    # Scan per-member email configs
+    for member_name, member in config.FAMILY_MEMBERS.items():
+        em = member.get("email")
+        if not em:
+            continue
+        if em["type"] == "gmail" and gmail_client:
+            await _scan_email_for_member(member_name, gmail_client, use_gmail=True)
+            scanned.add(member_name)
+        elif em["type"] == "imap" and email_client:
+            await _scan_email_for_member(member_name, email_client, use_gmail=False)
+            scanned.add(member_name)
+
+    # Fallback: if no per-member configs, use global email settings for owner
+    if not scanned and email_client:
+        await _scan_email_for_member(config.OWNER, email_client, use_gmail=False)
+    elif not scanned and gmail_client:
+        await _scan_email_for_member(config.OWNER, gmail_client, use_gmail=True)
 
 
 async def job_payment_reminders():

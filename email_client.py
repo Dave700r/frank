@@ -23,14 +23,45 @@ EMAIL_USER = app_config.EMAIL_USER
 EMAIL_PASS = app_config.EMAIL_PASS
 
 
-def _imap_connect():
+def _imap_connect(host=None, port=None, user=None, password=None):
+    """Connect to IMAP server. Uses global config if per-user args not provided."""
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE
-    mail = imaplib.IMAP4(IMAP_HOST, IMAP_PORT)
+    mail = imaplib.IMAP4(host or IMAP_HOST, port or IMAP_PORT)
     mail.starttls(ssl_context=ctx)
-    mail.login(EMAIL_USER, EMAIL_PASS)
+    mail.login(user or EMAIL_USER, password or EMAIL_PASS)
     return mail
+
+
+def _get_user_creds(member_name=None):
+    """Get IMAP credentials for a specific family member, or global defaults."""
+    if member_name and member_name in app_config.FAMILY_MEMBERS:
+        em = app_config.FAMILY_MEMBERS[member_name].get("email")
+        if em and em["type"] == "imap":
+            password = os.environ.get(em["pass_env"], "") if em.get("pass_env") else ""
+            return {
+                "host": em.get("imap_host") or IMAP_HOST,
+                "port": em.get("imap_port") or IMAP_PORT,
+                "user": em.get("user") or EMAIL_USER,
+                "password": password or EMAIL_PASS,
+                "smtp_host": em.get("smtp_host") or SMTP_HOST,
+                "smtp_port": em.get("smtp_port") or SMTP_PORT,
+            }
+    return {"host": IMAP_HOST, "port": IMAP_PORT, "user": EMAIL_USER,
+            "password": EMAIL_PASS, "smtp_host": SMTP_HOST, "smtp_port": SMTP_PORT}
+
+
+def get_members_with_email():
+    """Return list of member names that have email configured (imap or gmail)."""
+    members = []
+    for name, member in app_config.FAMILY_MEMBERS.items():
+        if member.get("email"):
+            members.append(name)
+    # If no per-member email but global email is enabled, return owner
+    if not members and app_config.EMAIL_ENABLED:
+        members.append(app_config.OWNER)
+    return members
 
 
 def _decode_str(s):
@@ -64,9 +95,10 @@ def _get_body(msg):
     return ""
 
 
-def get_unread(limit=10):
+def get_unread(limit=10, member_name=None):
     """Get unread emails from inbox. Returns list of dicts."""
-    mail = _imap_connect()
+    creds = _get_user_creds(member_name)
+    mail = _imap_connect(creds["host"], creds["port"], creds["user"], creds["password"])
     try:
         mail.select("INBOX")
         _, ids = mail.search(None, "UNSEEN")
@@ -90,9 +122,10 @@ def get_unread(limit=10):
         mail.logout()
 
 
-def get_recent(folder="INBOX", limit=10):
+def get_recent(folder="INBOX", limit=10, member_name=None):
     """Get most recent emails from a folder."""
-    mail = _imap_connect()
+    creds = _get_user_creds(member_name)
+    mail = _imap_connect(creds["host"], creds["port"], creds["user"], creds["password"])
     try:
         mail.select(folder)
         _, ids = mail.search(None, "ALL")
@@ -116,14 +149,15 @@ def get_recent(folder="INBOX", limit=10):
         mail.logout()
 
 
-def get_bills(limit=10):
+def get_bills(limit=10, member_name=None):
     """Get recent emails from the Bills label."""
-    return get_recent("Labels/Bills", limit=limit)
+    return get_recent("Labels/Bills", limit=limit, member_name=member_name)
 
 
-def search_inbox(query, limit=10):
+def search_inbox(query, limit=10, member_name=None):
     """Search inbox by subject or from."""
-    mail = _imap_connect()
+    creds = _get_user_creds(member_name)
+    mail = _imap_connect(creds["host"], creds["port"], creds["user"], creds["password"])
     try:
         mail.select("INBOX")
         # Try subject search first
@@ -172,9 +206,10 @@ def send_email(to, subject, body):
     return True
 
 
-def get_unread_count():
+def get_unread_count(member_name=None):
     """Quick check of unread email count."""
-    mail = _imap_connect()
+    creds = _get_user_creds(member_name)
+    mail = _imap_connect(creds["host"], creds["port"], creds["user"], creds["password"])
     try:
         mail.select("INBOX")
         _, ids = mail.search(None, "UNSEEN")

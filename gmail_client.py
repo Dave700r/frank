@@ -19,7 +19,7 @@ SCOPES = [
     "https://www.googleapis.com/auth/gmail.labels",
 ]
 
-_service = None
+_services = {}  # keyed by member_name (None = default/global)
 
 
 def _get_credentials_path():
@@ -27,16 +27,17 @@ def _get_credentials_path():
     return Path(config._CONFIG_DIR) / "gmail_credentials.json"
 
 
-def _get_token_path():
-    """Path to stored refresh/access token."""
+def _get_token_path(member_name=None):
+    """Path to stored refresh/access token. Per-user tokens use gmail_token_<name>.json."""
+    if member_name:
+        return Path(config._CONFIG_DIR) / f"gmail_token_{member_name}.json"
     return Path(config._CONFIG_DIR) / "gmail_token.json"
 
 
-def _get_service():
-    """Lazy-init Gmail API service with auto-refresh."""
-    global _service
-    if _service is not None:
-        return _service
+def _get_service(member_name=None):
+    """Lazy-init Gmail API service with auto-refresh. Supports per-user tokens."""
+    if member_name in _services:
+        return _services[member_name]
 
     from google.auth.transport.requests import Request
     from google.oauth2.credentials import Credentials
@@ -44,7 +45,7 @@ def _get_service():
     from googleapiclient.discovery import build
 
     creds = None
-    token_path = _get_token_path()
+    token_path = _get_token_path(member_name)
     creds_path = _get_credentials_path()
 
     if token_path.exists():
@@ -65,16 +66,41 @@ def _get_service():
 
         with open(token_path, "w") as f:
             f.write(creds.to_json())
-        log.info("Gmail credentials saved")
+        log.info(f"Gmail credentials saved for {member_name or 'default'}")
 
-    _service = build("gmail", "v1", credentials=creds)
-    log.info("Gmail API connected")
-    return _service
+    service = build("gmail", "v1", credentials=creds)
+    _services[member_name] = service
+    log.info(f"Gmail API connected for {member_name or 'default'}")
+    return service
 
 
-def get_unread(limit=5):
+def setup_for_user(member_name):
+    """Interactive setup: authorize Gmail for a specific family member.
+    Run this from the command line: python -c "import gmail_client; gmail_client.setup_for_user('name')" """
+    service = _get_service(member_name)
+    if service:
+        print(f"Gmail authorized for {member_name}. Token saved to {_get_token_path(member_name)}")
+    else:
+        print(f"Gmail setup failed for {member_name}.")
+
+
+def get_members_with_gmail():
+    """Return list of member names that have Gmail configured."""
+    members = []
+    for name, member in config.FAMILY_MEMBERS.items():
+        em = member.get("email")
+        if em and em["type"] == "gmail" and _get_token_path(name).exists():
+            members.append(name)
+    # Also include default if global gmail is enabled and token exists
+    if config.GMAIL_ENABLED and _get_token_path().exists():
+        if config.OWNER not in members:
+            members.append(config.OWNER)
+    return members
+
+
+def get_unread(limit=5, member_name=None):
     """Get recent unread emails."""
-    service = _get_service()
+    service = _get_service(member_name)
     if not service:
         return []
 
@@ -106,9 +132,9 @@ def get_unread(limit=5):
         return []
 
 
-def get_unread_count():
+def get_unread_count(member_name=None):
     """Get count of unread emails."""
-    service = _get_service()
+    service = _get_service(member_name)
     if not service:
         return 0
     try:
@@ -121,9 +147,9 @@ def get_unread_count():
         return 0
 
 
-def search(query, limit=5):
+def search(query, limit=5, member_name=None):
     """Search emails by query string."""
-    service = _get_service()
+    service = _get_service(member_name)
     if not service:
         return []
 
@@ -153,9 +179,9 @@ def search(query, limit=5):
         return []
 
 
-def get_message(msg_id):
+def get_message(msg_id, member_name=None):
     """Get full message content by ID."""
-    service = _get_service()
+    service = _get_service(member_name)
     if not service:
         return None
 
@@ -191,9 +217,9 @@ def get_message(msg_id):
         return None
 
 
-def send_email(to, subject, body):
+def send_email(to, subject, body, member_name=None):
     """Send an email from the authenticated Gmail account."""
-    service = _get_service()
+    service = _get_service(member_name)
     if not service:
         raise RuntimeError("Gmail not configured")
 
@@ -213,9 +239,9 @@ def send_email(to, subject, body):
         raise
 
 
-def get_labels():
+def get_labels(member_name=None):
     """List all Gmail labels."""
-    service = _get_service()
+    service = _get_service(member_name)
     if not service:
         return []
     try:
@@ -226,11 +252,11 @@ def get_labels():
         return []
 
 
-def get_bills(limit=5):
+def get_bills(limit=5, member_name=None):
     """Search for bill-related emails."""
     bill_queries = [
         "subject:(bill OR invoice OR statement OR payment due OR amount owing)",
         "from:(noreply OR billing OR payments OR accounts)",
     ]
     query = " OR ".join(f"({q})" for q in bill_queries)
-    return search(f"newer_than:30d ({query})", limit=limit)
+    return search(f"newer_than:30d ({query})", limit=limit, member_name=member_name)

@@ -37,6 +37,18 @@ for name, member in _cfg["family"]["members"].items():
     }
     if "telegram_id" in member:
         FAMILY_MEMBERS[name]["telegram_id"] = member["telegram_id"]
+    # Per-member email config (optional)
+    if "email" in member:
+        _em = member["email"]
+        FAMILY_MEMBERS[name]["email"] = {
+            "type": _em.get("type", "imap"),  # "imap" or "gmail"
+            "imap_host": _em.get("imap_host", ""),
+            "imap_port": _em.get("imap_port", 993),
+            "smtp_host": _em.get("smtp_host", ""),
+            "smtp_port": _em.get("smtp_port", 587),
+            "user": _em.get("user", ""),
+            "pass_env": _em.get("pass_env", ""),  # env var name for password
+        }
 
 # Reverse lookups
 TELEGRAM_ID_TO_NAME = {
