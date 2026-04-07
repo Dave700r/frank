@@ -180,38 +180,52 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
                         "firefly", "cost", "expense", "how much", "owe", "paid",
                         "payment", "bill", "receipt", "finance", "grocery cost")
 
-    # Add email context if email-related
+    # Add email context if email-related — only load the REQUESTING user's email
     email_context = ""
     email_keywords = ("email", "inbox", "mail", "unread", "message from", "bill",
                       "reply to", "respond to", "send email", "that email", "read it",
                       "my email", "your email", "finances")
-    if email_client and any(kw in lower for kw in email_keywords):
+    if any(kw in lower for kw in email_keywords):
         try:
-            # Owner's email inbox
-            owner_nick = config.FAMILY_MEMBERS[config.OWNER]["nickname"]
-            proton_emails = email_client.get_unread(limit=5)
-            proton_section = ""
-            if proton_emails:
-                proton_lines = []
-                for e in proton_emails:
-                    proton_lines.append(f"From: {e['from']}\nSubject: {e['subject']}\nDate: {e['date']}\nPreview: {e.get('body_preview', e.get('preview', ''))[:200]}\n")
-                proton_section = f"\n{owner_nick.upper()}'S INBOX — {len(proton_emails)} recent:\n" + "\n---\n".join(proton_lines)
+            member = config.FAMILY_MEMBERS.get(user_name, {})
+            has_email = member.get("email")
+            user_nick = member.get("nickname", user_name or "User")
+
+            if has_email or (user_name == config.OWNER and email_client):
+                em_type = (has_email or {}).get("type", "imap")
+                if em_type == "gmail":
+                    try:
+                        import gmail_client
+                        user_emails = gmail_client.get_unread(limit=5, member_name=user_name)
+                    except Exception:
+                        user_emails = []
+                elif email_client:
+                    user_emails = email_client.get_unread(limit=5, member_name=user_name)
+                else:
+                    user_emails = []
+
+                if user_emails:
+                    email_lines = []
+                    for e in user_emails:
+                        preview = e.get('body_preview', e.get('snippet', e.get('preview', '')))[:200]
+                        email_lines.append(f"From: {e['from']}\nSubject: {e.get('subject', '')}\nDate: {e.get('date', '')}\nPreview: {preview}\n")
+                    email_context = f"\n{user_nick.upper()}'S INBOX — {len(user_emails)} recent:\n" + "\n---\n".join(email_lines)
+                else:
+                    email_context = f"\n{user_nick.upper()}'S INBOX: No unread emails."
+
+                # Bot's own inbox — only visible to owner
+                if user_name == config.OWNER and config.AGENTMAIL_ENABLED:
+                    try:
+                        import agentmail_client
+                        frank_emails = agentmail_client.get_recent_with_content(limit=3)
+                        bot_address = config.AGENTMAIL_ADDRESS or "bot email"
+                        email_context += f"\n{config.BOT_NAME.upper()}'S INBOX ({bot_address}):\n{frank_emails}"
+                    except Exception:
+                        pass
+
+                email_context += f"\n\nThis is {user_nick}'s private email data. NEVER share it with other family members."
             else:
-                proton_section = f"\n{owner_nick.upper()}'S INBOX: No unread emails."
-
-            # Bot's own email inbox
-            frank_section = ""
-            if config.AGENTMAIL_ENABLED:
-                try:
-                    import agentmail_client
-                    frank_emails = agentmail_client.get_recent_with_content(limit=3)
-                    bot_address = config.AGENTMAIL_ADDRESS or "bot email"
-                    frank_section = f"\n{config.BOT_NAME.upper()}'S INBOX ({bot_address}):\n{frank_emails}"
-                except Exception:
-                    pass
-
-            email_context = proton_section + "\n" + frank_section
-            email_context += f"\n\nYou have access to email. {owner_nick}'s inbox is for reading their mail and tracking finances. To reply to {owner_nick}'s emails, use the send_email action."
+                email_context = f"\n{user_nick} doesn't have email set up yet. Suggest they say 'set up my email' to get started."
         except Exception as e:
             email_context = f"\nEmail system error: {e}"
     if firefly and any(kw in lower for kw in finance_keywords):

@@ -326,19 +326,20 @@ async def cmd_balance(room_id: str, room: MatrixRoom, sender: str):
 
 
 async def cmd_inbox(room_id: str, room: MatrixRoom, sender: str):
-    if not email_client:
-        await _send(room_id, "Email is not configured.")
-        return
     user_name = _matrix_user_to_name(sender)
-    if user_name != config.OWNER:
-        await _send(room_id, "Email access is owner-only.")
+    member = config.FAMILY_MEMBERS.get(user_name, {})
+    has_email = member.get("email")
+
+    if not has_email and user_name != config.OWNER:
+        await _send(room_id, "You don't have email set up yet. Say 'set up my email' to get started!")
+        return
+    if not has_email and not email_client:
+        await _send(room_id, "Email is not configured.")
         return
 
     is_dm = _is_private(room)
     if not is_dm:
-        await _send(room_id, "I'll DM you -- email is private.")
-
-    target = room_id if is_dm else None
+        await _send(room_id, "I'll DM you — email is private.")
 
     async def send_msg(msg):
         if is_dm:
@@ -347,22 +348,32 @@ async def cmd_inbox(room_id: str, room: MatrixRoom, sender: str):
             await _send_to_user(sender, msg)
 
     try:
-        # Owner's email inbox
-        owner_nick = config.FAMILY_MEMBERS[config.OWNER]["nickname"]
-        proton = email_client.get_unread(limit=5)
-        lines = [f"{owner_nick.upper()}'S EMAIL\n"]
-        if proton:
-            lines.append(f"{len(proton)} recent:\n")
-            for e in proton:
+        nickname = member.get("nickname", user_name.title())
+        em_cfg = member.get("email", {})
+        em_type = em_cfg.get("type", "imap")
+
+        # Get this user's emails
+        if em_type == "gmail" and gmail_client:
+            emails = gmail_client.get_unread(limit=5, member_name=user_name)
+        elif email_client:
+            emails = email_client.get_unread(limit=5, member_name=user_name)
+        else:
+            await send_msg("Couldn't connect to your email.")
+            return
+
+        lines = [f"{nickname.upper()}'S EMAIL\n"]
+        if emails:
+            lines.append(f"{len(emails)} recent:\n")
+            for e in emails:
                 lines.append(f"From: {e['from']}")
-                lines.append(f"Subject: {e['subject']}")
-                lines.append(f"Date: {e['date']}")
+                lines.append(f"Subject: {e.get('subject', '(no subject)')}")
+                lines.append(f"Date: {e.get('date', '')}")
                 lines.append("")
         else:
             lines.append("No unread emails.\n")
 
-        # Bot's own email inbox
-        if agentmail_client:
+        # Only show bot's inbox to the owner
+        if user_name == config.OWNER and agentmail_client:
             frank_mail = agentmail_client.get_unread(limit=5)
             lines.append(f"{config.BOT_NAME.upper()}'S EMAIL ({config.AGENTMAIL_ADDRESS})\n")
             if frank_mail:
@@ -377,34 +388,52 @@ async def cmd_inbox(room_id: str, room: MatrixRoom, sender: str):
 
         msg = "\n".join(lines)
         await send_msg(msg)
-        ai.inject_context(f"matrix_{room_id}", "checked both email inboxes", msg[:500])
+        ai.inject_context(f"matrix_{room_id}", "checked email inbox", msg[:500])
 
     except Exception as e:
-        log.error(f"Email error: {e}")
+        log.error(f"Email error for {user_name}: {e}")
         await send_msg("Couldn't check email right now.")
 
 
 async def cmd_bills(room_id: str, room: MatrixRoom, sender: str):
-    if not email_client:
-        await _send(room_id, "Email is not configured.")
-        return
     user_name = _matrix_user_to_name(sender)
-    if user_name != config.OWNER:
-        await _send(room_id, "Bill access is owner-only.")
+    member = config.FAMILY_MEMBERS.get(user_name, {})
+    has_email = member.get("email")
+
+    if not has_email and user_name != config.OWNER:
+        await _send(room_id, "You don't have email set up yet. Say 'set up my email' to get started!")
+        return
+    if not has_email and not email_client:
+        await _send(room_id, "Email is not configured.")
         return
 
     is_dm = _is_private(room)
     if not is_dm:
         await _send(room_id, "I'll DM you the bills.")
 
+    async def send_msg(msg):
+        if is_dm:
+            await _send(room_id, msg)
+        else:
+            await _send_to_user(sender, msg)
+
     try:
-        bills = email_client.get_bills(limit=5)
+        em_cfg = member.get("email", {})
+        em_type = em_cfg.get("type", "imap")
+
+        if em_type == "gmail" and gmail_client:
+            bills = gmail_client.get_bills(limit=5, member_name=user_name)
+            # Normalize gmail format
+            bills = [{"from": b.get("from", ""), "subject": b.get("subject", ""),
+                       "date": b.get("date", ""), "body_preview": b.get("snippet", "")} for b in bills]
+        elif email_client:
+            bills = email_client.get_bills(limit=5, member_name=user_name)
+        else:
+            await send_msg("Couldn't connect to your email.")
+            return
+
         if not bills:
-            msg = "No bills found."
-            if is_dm:
-                await _send(room_id, msg)
-            else:
-                await _send_to_user(sender, msg)
+            await send_msg("No bills found.")
             return
 
         lines = ["RECENT BILLS\n"]
@@ -412,25 +441,17 @@ async def cmd_bills(room_id: str, room: MatrixRoom, sender: str):
             lines.append(f"From: {b['from']}")
             lines.append(f"Subject: {b['subject']}")
             lines.append(f"Date: {b['date']}")
-            parsed = email_client.parse_bill_email(b["subject"], b["body_preview"], b["from"])
+            parsed = email_client.parse_bill_email(b["subject"], b.get("body_preview", ""), b["from"])
             if parsed and parsed.get("amount"):
                 lines.append(f"Amount: ${parsed['amount']:.2f}")
                 if parsed.get("due_date"):
                     lines.append(f"Due: {parsed['due_date']}")
             lines.append("")
 
-        msg = "\n".join(lines)
-        if is_dm:
-            await _send(room_id, msg)
-        else:
-            await _send_to_user(sender, msg)
+        await send_msg("\n".join(lines))
     except Exception as e:
-        log.error(f"Bills error: {e}")
-        msg = "Couldn't check bills right now."
-        if is_dm:
-            await _send(room_id, msg)
-        else:
-            await _send_to_user(sender, msg)
+        log.error(f"Bills error for {user_name}: {e}")
+        await send_msg("Couldn't check bills right now.")
 
 
 async def cmd_remind(room_id: str, args: str, sender: str, user_name: str):
