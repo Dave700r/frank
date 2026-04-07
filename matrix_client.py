@@ -83,6 +83,7 @@ client: AsyncClient = None
 _first_sync_done = False
 _batcher = humanize.MessageBatcher(delay=2.5)
 _pending_receipts = {}  # room_id -> receipt/statement data awaiting confirmation
+_pending_gmail_auth = set()  # sender matrix IDs awaiting Gmail auth code
 _recent_file_rooms = {}  # room_id -> timestamp, tracks rooms with recent file uploads
 
 
@@ -586,11 +587,12 @@ async def cmd_help(room_id: str):
             "!recipe <#> - Show full recipe"
         )
 
+    email_help = "EMAIL\n!setup - Connect your Gmail for daily email scanning"
     if config.EMAIL_ENABLED or config.GMAIL_ENABLED:
-        email_help = "EMAIL (DM only)\n!inbox - Check emails\n!bills - Recent bills"
+        email_help += "\n!inbox - Check emails (DM only)\n!bills - Recent bills (DM only)"
         if config.AGENTMAIL_ENABLED:
             email_help += "\n!send <to> <subject> | <body> - Send email"
-        sections.append(email_help)
+    sections.append(email_help)
 
     if config.IMMICH_ENABLED:
         sections.append(
@@ -721,6 +723,38 @@ async def cmd_people(room_id: str):
     await _send(room_id, "\n".join(lines))
 
 
+async def cmd_setup_email(room_id: str, args: str, sender: str, user_name: str):
+    """Walk a user through Gmail setup via chat."""
+    try:
+        import gmail_client as _gmail
+    except ImportError:
+        await _send(room_id, "Gmail support isn't installed. Need the google-auth and google-api-python-client packages.")
+        return
+
+    creds_path = _gmail._get_credentials_path()
+    if not creds_path.exists():
+        await _send(room_id, "Gmail OAuth credentials aren't configured yet. The admin needs to place gmail_credentials.json (from Google Cloud Console) on the server.")
+        return
+
+    if _gmail.is_setup(user_name):
+        await _send(room_id, "Your Gmail is already connected! I scan it daily at 8 AM. Want me to check it now? Just ask me to check your email.")
+        return
+
+    auth_url = _gmail.get_auth_url(user_name)
+    if not auth_url:
+        await _send(room_id, "Couldn't generate the authorization link. Check the server logs.")
+        return
+
+    _pending_gmail_auth.add(sender)
+    await _send(room_id,
+        f"Let's get your Gmail connected! Here's what to do:\n\n"
+        f"1. Tap this link to sign in with Google:\n{auth_url}\n\n"
+        f"2. Sign into your Gmail account and click 'Allow'\n"
+        f"3. You'll see an authorization code — copy it and paste it back here\n\n"
+        f"I'm waiting for your code."
+    )
+
+
 # Build command registry — only register enabled features
 COMMANDS = {
     # Always available
@@ -731,6 +765,7 @@ COMMANDS = {
     "myprofile": lambda rid, args, room, sender, uname: cmd_myprofile(rid, uname),
     "resetprofile": lambda rid, args, room, sender, uname: cmd_resetprofile(rid, uname),
     "help": lambda rid, args, room, sender, uname: cmd_help(rid),
+    "setup": lambda rid, args, room, sender, uname: cmd_setup_email(rid, args, sender, uname),
 }
 
 # Grocery / inventory
@@ -1033,6 +1068,24 @@ async def on_message(room: MatrixRoom, event: RoomMessageText):
             await _send(room_id, "No problem, skipped.")
             return
 
+    # Check for pending Gmail auth code
+    if sender in _pending_gmail_auth:
+        code = text.strip()
+        if len(code) > 10:  # auth codes are long
+            try:
+                import gmail_client as _gmail
+                if _gmail.exchange_auth_code(user_name, code):
+                    _pending_gmail_auth.discard(sender)
+                    await _send(room_id, "Gmail connected! I'll start scanning your email at 8 AM daily. You can also ask me to check your email anytime.")
+                    log.info(f"Gmail setup complete for {user_name}")
+                else:
+                    await _send(room_id, "That code didn't work. Try the link again and paste the new code.")
+            except Exception as e:
+                log.error(f"Gmail auth failed for {user_name}: {e}")
+                await _send(room_id, "Something went wrong with the authorization. Let's try again — say 'set up my email' to start over.")
+                _pending_gmail_auth.discard(sender)
+            return
+
     # Check for commands (! prefix or / prefix)
     if text.startswith("!") or text.startswith("/"):
         parts = text[1:].split(None, 1)
@@ -1249,6 +1302,8 @@ async def _handle_ai_message(text: str, user_name: str, room_id: str,
                         log.info(f"Debt settled: {debtor_name} -> {creditor}")
                 except Exception as e:
                     log.error(f"Debt settle failed: {e}")
+            elif act == "setup_email":
+                await cmd_setup_email(room_id, "", sender, user_name)
             elif act == "followup":
                 topic = action.get("topic", "")
                 question = action.get("question", "")

@@ -157,6 +157,7 @@ ACTIONS (include JSON at END of reply — it gets stripped automatically):
 - {{"action": "search_photos", "query": "search terms"}} — search the family photo library. Use when someone asks to see photos, pictures, or images of something.
 - {{"action": "track_debt", "creditor": "name", "debtor": "name", "amount": 69.57, "description": "shopping trip"}} — track that one family member owes another money. Use when someone says "X owes me $Y" or "I owe X $Y". creditor = person owed money, debtor = person who owes.
 - {{"action": "settle_debt", "creditor": "name", "debtor": "name"}} — mark a debt as paid. Use when someone says they paid someone back or it's been settled.
+- {{"action": "setup_email"}} — start Gmail setup for the person talking. Use when someone says "set up my email", "connect my Gmail", "I want email scanning", etc. This walks them through Google authorization right here in the chat.
 Only ONE JSON block, only at the very end.
 
 The person talking: {user_name}

@@ -84,6 +84,55 @@ def setup_for_user(member_name):
         print(f"Gmail setup failed for {member_name}.")
 
 
+def get_auth_url(member_name):
+    """Generate a Gmail OAuth authorization URL for a family member.
+    Returns the URL string, or None if credentials file is missing."""
+    from google_auth_oauthlib.flow import InstalledAppFlow
+
+    creds_path = _get_credentials_path()
+    if not creds_path.exists():
+        log.error("Gmail OAuth credentials file not found: gmail_credentials.json")
+        return None
+
+    flow = InstalledAppFlow.from_client_secrets_file(str(creds_path), SCOPES)
+    flow.redirect_uri = "urn:ietf:wg:oauth:2.0:oob"
+    auth_url, _ = flow.authorization_url(prompt="consent")
+    # Store the flow temporarily for code exchange
+    _pending_flows[member_name] = flow
+    log.info(f"Gmail auth URL generated for {member_name}")
+    return auth_url
+
+
+def exchange_auth_code(member_name, code):
+    """Exchange an authorization code for tokens. Returns True on success."""
+    flow = _pending_flows.pop(member_name, None)
+    if not flow:
+        log.error(f"No pending auth flow for {member_name}")
+        return False
+
+    try:
+        flow.fetch_token(code=code)
+        creds = flow.credentials
+        token_path = _get_token_path(member_name)
+        with open(token_path, "w") as f:
+            f.write(creds.to_json())
+        # Clear cached service so it picks up new creds
+        _services.pop(member_name, None)
+        log.info(f"Gmail authorized for {member_name}, token saved to {token_path}")
+        return True
+    except Exception as e:
+        log.error(f"Gmail auth code exchange failed for {member_name}: {e}")
+        return False
+
+
+def is_setup(member_name):
+    """Check if Gmail is set up for a member (token file exists)."""
+    return _get_token_path(member_name).exists()
+
+
+_pending_flows = {}  # temporary storage for OAuth flows awaiting code exchange
+
+
 def get_members_with_gmail():
     """Return list of member names that have Gmail configured."""
     members = []
