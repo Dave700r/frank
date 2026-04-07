@@ -152,16 +152,18 @@ async def _send_to_user(matrix_id: str, text: str):
 async def _send_image(room_id: str, file_path: str, body: str = "image"):
     """Send an image file to a Matrix room."""
     import mimetypes
+    from io import BytesIO
+    import os
     mime = mimetypes.guess_type(file_path)[0] or "image/jpeg"
+    file_size = os.path.getsize(file_path)
     with open(file_path, "rb") as f:
-        data = f.read()
-    resp, _ = await client.upload(data, content_type=mime, filename=body)
+        resp, _ = await client.upload(f, content_type=mime, filename=body, filesize=file_size)
     if hasattr(resp, "content_uri"):
         content = {
             "msgtype": "m.image",
             "body": body,
             "url": resp.content_uri,
-            "info": {"mimetype": mime, "size": len(data)},
+            "info": {"mimetype": mime, "size": file_size},
         }
         await client.room_send(room_id, "m.room.message", content)
 
