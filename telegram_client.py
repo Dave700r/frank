@@ -86,6 +86,18 @@ async def cmd_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         lines.extend(entries)
         lines.append("")
     lines.append(f"{len(items)} items")
+
+    # Add dinner plan ingredients
+    try:
+        plans = db.get_meal_plan_ingredients(upcoming_only=True)
+        for p in plans:
+            if p["ingredients"]:
+                lines.append(f"\n🍽️ FOR {p['date']} — {p['meal'].upper()}")
+                for ing in p["ingredients"]:
+                    lines.append(f"  {ing}")
+    except Exception:
+        pass
+
     await update.message.reply_text("\n".join(lines))
 
 
@@ -282,6 +294,23 @@ async def cmd_cancel(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
         await update.message.reply_text(f"Couldn't find reminder #{rid}.")
 
 
+async def cmd_dinner(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
+    if not db:
+        return
+    plans = db.get_meal_plan_ingredients(upcoming_only=True)
+    if not plans:
+        await update.message.reply_text("No dinner plans right now. Tell me what you're making and when!")
+        return
+    lines = ["DINNER PLANS\n"]
+    for p in plans:
+        lines.append(f"🍽️ {p['date']} — {p['meal']}")
+        if p["ingredients"]:
+            for ing in p["ingredients"]:
+                lines.append(f"  - {ing}")
+        lines.append("")
+    await update.message.reply_text("\n".join(lines))
+
+
 async def cmd_recipes_list(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
     if not recipes:
         return
@@ -366,7 +395,8 @@ async def cmd_help(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
             "/add <item> - Add to list\n"
             "/bought <item> - Mark as bought\n"
             "/stock - Full inventory\n"
-            "/spent <amount> <store> - Log purchase"
+            "/spent <amount> <store> - Log purchase\n"
+            "/dinner - View planned dinners"
         )
     if config.FIREFLY_ENABLED:
         sections.append("/summary - Monthly spending\n/balance - Account balances")
@@ -452,6 +482,33 @@ async def on_message(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
                         firefly.log_receipt(store, float(amount))
                     except Exception:
                         pass
+        elif act == "plan_dinner":
+            meal = action.get("meal", "")
+            plan_date = action.get("date", "")
+            ingredients = action.get("ingredients", [])
+            if meal and plan_date and db:
+                if not ingredients and recipes:
+                    try:
+                        results = recipes.search_recipes(meal)
+                        if results:
+                            recipe_data = recipes.get_recipe(results[0]["id"])
+                            if recipe_data and recipe_data["ingredients"]:
+                                ingredients = []
+                                for ing in recipe_data["ingredients"]:
+                                    parts = []
+                                    if ing.get("amount"):
+                                        parts.append(str(ing["amount"]))
+                                    if ing.get("unit"):
+                                        parts.append(ing["unit"])
+                                    parts.append(ing["name"])
+                                    ingredients.append(" ".join(parts))
+                    except Exception:
+                        pass
+                db.add_meal_plan(plan_date, meal, ingredients=ingredients, planned_by=user_name)
+        elif act == "clear_dinner":
+            meal = action.get("meal", "")
+            if meal and db:
+                db.remove_meal_plan(meal_name=meal)
         elif act == "search_photos" and immich_client:
             query = action.get("query", "")
             if query:
@@ -511,6 +568,7 @@ def build_app() -> Application:
         _app.add_handler(CommandHandler("bought", cmd_bought))
         _app.add_handler(CommandHandler("stock", cmd_stock))
         _app.add_handler(CommandHandler("spent", cmd_spent))
+        _app.add_handler(CommandHandler("dinner", cmd_dinner))
 
     # Finance
     if config.FIREFLY_ENABLED:

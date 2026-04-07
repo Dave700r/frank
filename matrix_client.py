@@ -194,9 +194,39 @@ async def cmd_list(room_id: str):
         lines.append("")
 
     lines.append(f"{len(items)} items")
+
+    # Add dinner plan ingredients section
+    try:
+        plans = db.get_meal_plan_ingredients(upcoming_only=True)
+        for p in plans:
+            if p["ingredients"]:
+                lines.append(f"\n🍽️ FOR {p['date']} — {p['meal'].upper()}")
+                for ing in p["ingredients"]:
+                    lines.append(f"  {ing}")
+    except Exception:
+        pass
+
     msg = "\n".join(lines)
     await _send(room_id, msg)
     ai.inject_context(f"matrix_{room_id}", "checked shopping list", msg[:300])
+
+
+async def cmd_dinner(room_id: str):
+    """Show upcoming dinner plans."""
+    if not db:
+        return
+    plans = db.get_meal_plan_ingredients(upcoming_only=True)
+    if not plans:
+        await _send(room_id, "No dinner plans right now. Tell me what you're making and when!")
+        return
+    lines = ["DINNER PLANS\n"]
+    for p in plans:
+        lines.append(f"🍽️ {p['date']} — {p['meal']}")
+        if p["ingredients"]:
+            for ing in p["ingredients"]:
+                lines.append(f"  - {ing}")
+        lines.append("")
+    await _send(room_id, "\n".join(lines))
 
 
 async def cmd_add(room_id: str, args: str, user_name: str):
@@ -652,7 +682,8 @@ async def cmd_help(room_id: str):
             "!bought <item> - Mark as bought\n"
             "!stock - Full inventory\n"
             "!spent <amount> <store> - Log a purchase\n"
-            "!owe - Who owes who"
+            "!owe - Who owes who\n"
+            "!dinner - View planned dinners"
         )
 
     if config.FINANCE_ENABLED or config.FIREFLY_ENABLED:
@@ -1012,6 +1043,7 @@ if config.GROCERY_ENABLED:
         "stock": lambda rid, args, room, sender, uname: cmd_stock(rid),
         "spent": lambda rid, args, room, sender, uname: cmd_spent(rid, args, uname),
         "owe": lambda rid, args, room, sender, uname: cmd_owe(rid),
+        "dinner": lambda rid, args, room, sender, uname: cmd_dinner(rid),
     })
 
 # Finance
@@ -1560,6 +1592,36 @@ async def _handle_ai_message(text: str, user_name: str, room_id: str,
                     log.error(f"Debt settle failed: {e}")
             elif act == "setup_email":
                 await cmd_setup_email(room_id, "", sender, user_name)
+            elif act == "plan_dinner":
+                meal = action.get("meal", "")
+                plan_date = action.get("date", "")
+                ingredients = action.get("ingredients", [])
+                if meal and plan_date and db:
+                    # Check if a saved recipe matches and pull ingredients from it
+                    if not ingredients and recipes:
+                        try:
+                            results = recipes.search_recipes(meal)
+                            if results:
+                                recipe_data = recipes.get_recipe(results[0]["id"])
+                                if recipe_data and recipe_data["ingredients"]:
+                                    ingredients = []
+                                    for ing in recipe_data["ingredients"]:
+                                        parts = []
+                                        if ing.get("amount"):
+                                            parts.append(str(ing["amount"]))
+                                        if ing.get("unit"):
+                                            parts.append(ing["unit"])
+                                        parts.append(ing["name"])
+                                        ingredients.append(" ".join(parts))
+                        except Exception:
+                            pass
+                    db.add_meal_plan(plan_date, meal, ingredients=ingredients, planned_by=user_name)
+                    log.info(f"Dinner planned: {meal} on {plan_date} by {user_name}")
+            elif act == "clear_dinner":
+                meal = action.get("meal", "")
+                if meal and db:
+                    removed = db.remove_meal_plan(meal_name=meal)
+                    log.info(f"Dinner plan removed: {meal} ({removed} plans)")
             elif act == "followup":
                 topic = action.get("topic", "")
                 question = action.get("question", "")

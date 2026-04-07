@@ -113,6 +113,19 @@ def get_inventory_context():
         for item in shopping:
             lines.append(f"  - {item['name']} (requested by {item['requested_by'] or 'unknown'})")
 
+    # Add upcoming dinner plans
+    try:
+        plans = db.get_meal_plan_ingredients(upcoming_only=True)
+        if plans:
+            lines.append("\nPlanned dinners:")
+            for p in plans:
+                lines.append(f"  {p['date']} — {p['meal']}")
+                if p['ingredients']:
+                    for ing in p['ingredients']:
+                        lines.append(f"    - {ing}")
+    except Exception:
+        pass
+
     return "\n".join(lines)
 
 

@@ -139,6 +139,11 @@ RECIPES:
 You have a family recipe database. Search it first when someone asks about cooking.
 {recipe_context}
 
+DINNER PLANS:
+When someone plans a dinner, save it with ingredients so the grocery list shows what's needed.
+If the meal matches a saved recipe, ingredients are pulled automatically. Otherwise, generate a reasonable list.
+The shopping list (!list) and 9 AM grocery push automatically show a separate section for dinner plan ingredients.
+
 WEB SEARCH:
 You searched the web if the question needed it. Results below.
 {search_context}
@@ -164,6 +169,8 @@ ACTIONS (include JSON at END of reply — it gets stripped automatically):
 - {{"action": "track_debt", "creditor": "name", "debtor": "name", "amount": 69.57, "description": "shopping trip"}} — track that one family member owes another money. Use when someone says "X owes me $Y" or "I owe X $Y". creditor = person owed money, debtor = person who owes.
 - {{"action": "settle_debt", "creditor": "name", "debtor": "name"}} — mark a debt as paid. Use when someone says they paid someone back or it's been settled.
 - {{"action": "setup_email"}} — start Gmail setup for the person talking. Use when someone says "set up my email", "connect my Gmail", "I want email scanning", etc. This walks them through Google authorization right here in the chat.
+- {{"action": "plan_dinner", "date": "YYYY-MM-DD", "meal": "meal name", "ingredients": ["ingredient 1", "ingredient 2"]}} — plan a dinner for a specific date. If the meal matches a saved recipe, pull ingredients from it. If not, generate a reasonable ingredient list. Use when someone says "let's make X on Saturday", "plan tacos for Friday", etc.
+- {{"action": "clear_dinner", "meal": "meal name"}} — remove a planned dinner. Use when someone says "cancel the dinner plan", "never mind about the tacos", etc.
 Only ONE JSON block, only at the very end.
 
 The person talking: {user_name}

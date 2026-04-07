@@ -132,6 +132,99 @@ def record_event(item_name, event_type, qty=None, note=None):
     return item is not None
 
 
+# --- Meal Plans ---
+
+def _ensure_meal_plans_table():
+    """Create meal_plans table if it doesn't exist."""
+    conn = get_inventory_conn()
+    conn.execute("""
+        CREATE TABLE IF NOT EXISTS meal_plans (
+            id INTEGER PRIMARY KEY AUTOINCREMENT,
+            date TEXT NOT NULL,
+            meal TEXT NOT NULL,
+            recipe_id INTEGER,
+            ingredients TEXT,
+            planned_by TEXT,
+            created_at TEXT DEFAULT (datetime('now','localtime'))
+        )
+    """)
+    conn.commit()
+    conn.close()
+
+_ensure_meal_plans_table()
+
+
+def add_meal_plan(date, meal, recipe_id=None, ingredients=None, planned_by=None):
+    """Add a planned dinner. ingredients is a JSON list of ingredient strings."""
+    import json as _json
+    conn = get_inventory_conn()
+    conn.execute(
+        "INSERT INTO meal_plans (date, meal, recipe_id, ingredients, planned_by) "
+        "VALUES (?, ?, ?, ?, ?)",
+        (date, meal, recipe_id, _json.dumps(ingredients) if ingredients else None, planned_by),
+    )
+    conn.commit()
+    conn.close()
+
+
+def get_meal_plans(upcoming_only=True):
+    """Get meal plans. If upcoming_only, returns today and future only."""
+    conn = get_inventory_conn()
+    if upcoming_only:
+        rows = conn.execute(
+            "SELECT * FROM meal_plans WHERE date >= date('now','localtime') ORDER BY date",
+        ).fetchall()
+    else:
+        rows = conn.execute(
+            "SELECT * FROM meal_plans ORDER BY date DESC",
+        ).fetchall()
+    conn.close()
+    return rows
+
+
+def get_meal_plan_ingredients(upcoming_only=True):
+    """Get all ingredients from upcoming meal plans, grouped by meal."""
+    import json as _json
+    plans = get_meal_plans(upcoming_only=upcoming_only)
+    result = []
+    for plan in plans:
+        ingredients = []
+        if plan["ingredients"]:
+            try:
+                ingredients = _json.loads(plan["ingredients"])
+            except (ValueError, TypeError):
+                pass
+        result.append({
+            "id": plan["id"],
+            "date": plan["date"],
+            "meal": plan["meal"],
+            "recipe_id": plan["recipe_id"],
+            "ingredients": ingredients,
+        })
+    return result
+
+
+def remove_meal_plan(meal_name=None, date=None, plan_id=None):
+    """Remove a meal plan by name, date, or id. Returns number removed."""
+    conn = get_inventory_conn()
+    if plan_id:
+        cur = conn.execute("DELETE FROM meal_plans WHERE id=?", (plan_id,))
+    elif date:
+        cur = conn.execute("DELETE FROM meal_plans WHERE date=?", (date,))
+    elif meal_name:
+        cur = conn.execute(
+            "DELETE FROM meal_plans WHERE LOWER(meal) LIKE ?",
+            (f"%{meal_name.lower()}%",),
+        )
+    else:
+        conn.close()
+        return 0
+    conn.commit()
+    affected = cur.rowcount
+    conn.close()
+    return affected
+
+
 # --- Consumption Rates ---
 
 def get_consumption_alerts():

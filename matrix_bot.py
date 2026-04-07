@@ -91,6 +91,17 @@ async def job_grocery_push():
         lines.append("")
     lines.append(f"{len(items)} items — reply !bought <item> when you pick something up!")
 
+    # Add dinner plan ingredients
+    try:
+        plans = db.get_meal_plan_ingredients(upcoming_only=True)
+        for p in plans:
+            if p["ingredients"]:
+                lines.append(f"\n🍽️ FOR {p['date']} — {p['meal'].upper()}")
+                for ing in p["ingredients"]:
+                    lines.append(f"  {ing}")
+    except Exception:
+        pass
+
     await matrix_client.send_to_family_group("\n".join(lines))
     log.info(f"Grocery list pushed ({len(items)} items)")
 
