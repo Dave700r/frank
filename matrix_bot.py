@@ -139,17 +139,24 @@ async def _scan_email_for_member(member_name, client_mod, use_gmail=False):
                 try:
                     payee = parsed["payee"]
                     cat_map = {
-                        "hydro": "Electricity (Hydro One)",
+                        "hydro": "Electricity",
                         "enbridge": "Gas & Heating",
                         "union gas": "Gas & Heating",
                         "rogers": "Internet",
-                        "insurance": "Insurance - Home",
+                        "insurance": "Insurance",
                     }
-                    category = "Uncategorized"
+                    category = "Bills"
                     for key, cat in cat_map.items():
                         if key in payee.lower():
                             category = cat
                             break
+                    # Log to built-in finance (per-user)
+                    try:
+                        import finance
+                        finance.log_transaction(member_name, payee, parsed["amount"], category=category)
+                    except Exception as e:
+                        log.warning(f"Built-in finance log failed for {member_name}: {e}")
+                    # Also log to Firefly if enabled
                     if firefly:
                         firefly.log_transaction(
                             description=payee,
@@ -158,7 +165,7 @@ async def _scan_email_for_member(member_name, client_mod, use_gmail=False):
                             destination_name=payee,
                         )
                 except Exception as e:
-                    log.warning(f"Firefly bill log failed for {member_name}: {e}")
+                    log.warning(f"Bill log failed for {member_name}: {e}")
 
         if new_bills:
             lines = [f"BILL ALERT\n"]

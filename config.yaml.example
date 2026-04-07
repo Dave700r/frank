@@ -70,6 +70,8 @@ recipes:
   enabled: true   # Family recipe database
 buddy:
   enabled: true   # Tamagotchi companion pets
+finance:
+  enabled: true   # Built-in per-user finance tracking (no external service needed)
 
 # --- AI ---
 # Uses OpenRouter (OpenAI-compatible). Set OPENROUTER_API_KEY env var.

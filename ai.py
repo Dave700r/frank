@@ -228,12 +228,17 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
                 email_context = f"\n{user_nick} doesn't have email set up yet. Suggest they say 'set up my email' to get started."
         except Exception as e:
             email_context = f"\nEmail system error: {e}"
-    if firefly and any(kw in lower for kw in finance_keywords):
+    if any(kw in lower for kw in finance_keywords):
+        # Try built-in finance first (per-user), fall back to Firefly
         try:
-            summary = firefly.get_monthly_summary()
-            recent = firefly.get_recent_transactions(limit=5)
-            finance_context = f"\nFINANCE DATA (from Firefly III):\n"
-            finance_context += f"This month's total spending: ${summary['total']:.2f}\n"
+            import finance as _finance
+            summary = _finance.get_monthly_summary(user_name)
+            recent = _finance.get_recent(user_name, limit=5)
+            user_nick = config.FAMILY_MEMBERS.get(user_name, {}).get("nickname", user_name or "User")
+            finance_context = f"\n{user_nick.upper()}'S FINANCE DATA:\n"
+            finance_context += f"This month's spending: ${summary['total_spent']:.2f}\n"
+            if summary['total_income'] > 0:
+                finance_context += f"This month's income: ${summary['total_income']:.2f}\n"
             if summary["by_category"]:
                 finance_context += "By category:\n"
                 for cat, amt in sorted(summary["by_category"].items(), key=lambda x: -x[1]):
@@ -241,9 +246,27 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
             if recent:
                 finance_context += "\nRecent transactions:\n"
                 for tx in recent:
-                    finance_context += f"  {tx['date']} - {tx['description']}: ${tx['amount']} ({tx['category']})\n"
+                    sign = "+" if tx["tx_type"] == "deposit" else "-"
+                    finance_context += f"  {tx['date']} — {sign}${tx['amount']:.2f} — {tx['description']} [{tx['category']}]\n"
+            finance_context += f"\nThis is {user_nick}'s private financial data. NEVER share with other family members."
         except Exception:
-            finance_context = "\nFirefly III is not responding right now.\n"
+            # Fall back to Firefly if built-in finance fails
+            if firefly:
+                try:
+                    summary = firefly.get_monthly_summary()
+                    recent = firefly.get_recent_transactions(limit=5)
+                    finance_context = f"\nFINANCE DATA:\n"
+                    finance_context += f"This month's total spending: ${summary['total']:.2f}\n"
+                    if summary["by_category"]:
+                        finance_context += "By category:\n"
+                        for cat, amt in sorted(summary["by_category"].items(), key=lambda x: -x[1]):
+                            finance_context += f"  {cat}: ${amt:.2f}\n"
+                    if recent:
+                        finance_context += "\nRecent transactions:\n"
+                        for tx in recent:
+                            finance_context += f"  {tx['date']} - {tx['description']}: ${tx['amount']} ({tx['category']})\n"
+                except Exception:
+                    finance_context = "\nFinance data unavailable right now.\n"
 
     import prompt_builder
     system_prompt = prompt_builder.build_system_prompt(

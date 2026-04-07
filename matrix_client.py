@@ -256,6 +256,11 @@ async def cmd_spent(room_id: str, args: str, user_name: str):
 
     store = parts[1]
     db.log_spend(store, amount)
+    try:
+        import finance
+        finance.log_receipt(user_name, store, amount)
+    except Exception as e:
+        log.warning(f"Finance log failed: {e}")
     if firefly:
         try:
             firefly.log_receipt(store, amount)
@@ -568,6 +573,69 @@ async def cmd_recipe(room_id: str, args: str):
     await _send(room_id, formatted)
 
 
+async def cmd_summary(room_id: str, args: str, room: MatrixRoom, sender: str):
+    """Monthly spending summary for the requesting user."""
+    user_name = _matrix_user_to_name(sender)
+    try:
+        import finance
+        summary = finance.get_monthly_summary(user_name)
+        nickname = config.FAMILY_MEMBERS.get(user_name, {}).get("nickname", user_name.title())
+        month_name = datetime.now().strftime("%B %Y")
+
+        lines = [f"{nickname.upper()}'S FINANCES — {month_name}\n"]
+        lines.append(f"Total spent: ${summary['total_spent']:.2f}")
+        if summary['total_income'] > 0:
+            lines.append(f"Total income: ${summary['total_income']:.2f}")
+        lines.append(f"Transactions: {summary['transaction_count']}\n")
+
+        if summary['by_category']:
+            lines.append("By category:")
+            for cat, total in summary['by_category'].items():
+                lines.append(f"  {cat}: ${total:.2f}")
+
+        is_dm = _is_private(room)
+        if is_dm:
+            await _send(room_id, "\n".join(lines))
+        else:
+            await _send(room_id, "I'll DM you — finances are private.")
+            await _send_to_user(sender, "\n".join(lines))
+    except Exception as e:
+        log.error(f"Summary error for {user_name}: {e}")
+        await _send(room_id, "Couldn't pull your summary right now.")
+
+
+async def cmd_transactions(room_id: str, args: str, room: MatrixRoom, sender: str):
+    """Show recent transactions for the requesting user."""
+    user_name = _matrix_user_to_name(sender)
+    try:
+        import finance
+        if args:
+            txns = finance.search_transactions(user_name, args, limit=10)
+            header = f"TRANSACTIONS MATCHING '{args}'"
+        else:
+            txns = finance.get_recent(user_name, limit=10)
+            header = "RECENT TRANSACTIONS"
+
+        if not txns:
+            await _send(room_id, "No transactions found.")
+            return
+
+        lines = [f"{header}\n"]
+        for tx in txns:
+            sign = "+" if tx["tx_type"] == "deposit" else "-"
+            lines.append(f"  {tx['date']}  {sign}${tx['amount']:.2f}  {tx['description']}  [{tx['category']}]")
+
+        is_dm = _is_private(room)
+        if is_dm:
+            await _send(room_id, "\n".join(lines))
+        else:
+            await _send(room_id, "I'll DM you — finances are private.")
+            await _send_to_user(sender, "\n".join(lines))
+    except Exception as e:
+        log.error(f"Transactions error for {user_name}: {e}")
+        await _send(room_id, "Couldn't pull transactions right now.")
+
+
 async def cmd_briefing(room_id: str):
     msg = briefing.build_briefing()
     await _send(room_id, msg)
@@ -587,11 +655,12 @@ async def cmd_help(room_id: str):
             "!owe - Who owes who"
         )
 
-    if config.FIREFLY_ENABLED:
+    if config.FINANCE_ENABLED or config.FIREFLY_ENABLED:
         sections.append(
-            "MONEY\n"
+            "MONEY (DM only)\n"
             "!summary - Monthly spending breakdown\n"
-            "!balance - Account balances (DM only)"
+            "!transactions - Recent transactions\n"
+            "!transactions <search> - Search transactions"
         )
 
     sections.append(
@@ -946,10 +1015,14 @@ if config.GROCERY_ENABLED:
     })
 
 # Finance
-if config.FIREFLY_ENABLED:
+if config.FINANCE_ENABLED:
     COMMANDS.update({
-        "summary": lambda rid, args, room, sender, uname: cmd_summary(rid),
-        "balance": lambda rid, args, room, sender, uname: cmd_balance(rid, room, sender),
+        "summary": lambda rid, args, room, sender, uname: cmd_summary(rid, args, room, sender),
+        "transactions": lambda rid, args, room, sender, uname: cmd_transactions(rid, args, room, sender),
+    })
+elif config.FIREFLY_ENABLED:
+    COMMANDS.update({
+        "summary": lambda rid, args, room, sender, uname: cmd_summary(rid, args, room, sender),
     })
 
 # Email
@@ -1188,43 +1261,48 @@ async def on_message(room: MatrixRoom, event: RoomMessageText):
         if is_confirm and not is_deny:
             pending = _pending_receipts.pop(room_id)
             try:
+                import finance as _fin
                 if pending.get("type") == "bank_statement":
-                    import firefly
-                    acct_id = pending.get("account_id", 1)
-                    acct_type = pending.get("account_type", "asset")
                     logged_w = 0
                     logged_d = 0
-                    if not firefly:
-                        await _send(room_id, "Finance tracking is not configured — can't log these.")
-                        return
                     for tx in pending.get("transactions", []):
                         tx_type = tx.get("type", "withdrawal")
-                        firefly.log_transaction(
-                            description=tx.get("description", "Unknown"),
-                            amount=tx.get("amount", 0),
-                            category=tx.get("category", "Other"),
-                            destination_name=tx.get("description", "Unknown"),
-                            tx_date=tx.get("date"),
-                            tx_type=tx_type,
-                            source_id=acct_id,
-                            account_type=acct_type,
+                        _fin.log_transaction(
+                            user_name, tx.get("description", "Unknown"),
+                            tx.get("amount", 0), category=tx.get("category", "Other"),
+                            tx_type=tx_type, tx_date=tx.get("date"),
                         )
                         if tx_type == "deposit":
                             logged_d += 1
                         else:
                             logged_w += 1
+                    # Also log to Firefly if enabled
+                    if firefly:
+                        acct_id = pending.get("account_id", 1)
+                        acct_type = pending.get("account_type", "asset")
+                        for tx in pending.get("transactions", []):
+                            try:
+                                firefly.log_transaction(
+                                    description=tx.get("description", "Unknown"),
+                                    amount=tx.get("amount", 0),
+                                    category=tx.get("category", "Other"),
+                                    destination_name=tx.get("description", "Unknown"),
+                                    tx_date=tx.get("date"),
+                                    tx_type=tx.get("type", "withdrawal"),
+                                    source_id=acct_id, account_type=acct_type,
+                                )
+                            except Exception:
+                                pass
                     acct_name = pending.get("account", "Unknown")
-                    await _send(room_id, f"Logged {logged_w} withdrawals and {logged_d} deposits to **{acct_name}** in Firefly.")
+                    await _send(room_id, f"Logged {logged_w} withdrawals and {logged_d} deposits from **{acct_name}**.")
                 else:
-                    if not firefly:
-                        await _send(room_id, "Finance tracking is not configured — can't log this.")
-                        return
-                    tx_id = firefly.log_receipt(
-                        store=pending["store"],
-                        total=pending["total"],
-                        items=pending.get("items"),
-                    )
-                    await _send(room_id, f"Logged ${pending['total']:.2f} at {pending['store']} to Firefly.")
+                    _fin.log_receipt(user_name, pending["store"], pending["total"])
+                    if firefly:
+                        try:
+                            firefly.log_receipt(store=pending["store"], total=pending["total"], items=pending.get("items"))
+                        except Exception:
+                            pass
+                    await _send(room_id, f"Logged ${pending['total']:.2f} at {pending['store']}.")
             except Exception as e:
                 log.error(f"Firefly log failed: {e}")
                 await _send(room_id, f"Failed to log to Firefly: {e}")
@@ -1427,8 +1505,14 @@ async def _handle_ai_message(text: str, user_name: str, room_id: str,
             elif act == "log_spend":
                 store = action.get("store", "Unknown")
                 amount = action.get("amount", 0)
-                if amount and db:
-                    db.log_spend(store, float(amount))
+                if amount:
+                    if db:
+                        db.log_spend(store, float(amount))
+                    try:
+                        import finance
+                        finance.log_receipt(user_name, store, float(amount))
+                    except Exception as e:
+                        log.warning(f"Built-in finance log failed: {e}")
                     if firefly:
                         try:
                             firefly.log_receipt(store, float(amount))
