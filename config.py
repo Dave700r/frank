@@ -50,6 +50,16 @@ for name, member in _cfg["family"]["members"].items():
             "pass_env": _em.get("pass_env", ""),  # env var name for password
         }
 
+# Load runtime email accounts (set up via chat, stored in email_accounts.json)
+_email_accounts_file = _CONFIG_DIR / "email_accounts.json"
+if _email_accounts_file.exists():
+    import json as _json
+    with open(_email_accounts_file) as _f:
+        _runtime_accounts = _json.load(_f)
+    for _name, _acct in _runtime_accounts.items():
+        if _name in FAMILY_MEMBERS and "email" not in FAMILY_MEMBERS[_name]:
+            FAMILY_MEMBERS[_name]["email"] = _acct
+
 # Reverse lookups
 TELEGRAM_ID_TO_NAME = {
     v["telegram_id"]: k for k, v in FAMILY_MEMBERS.items() if "telegram_id" in v

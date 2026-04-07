@@ -24,13 +24,20 @@ EMAIL_PASS = app_config.EMAIL_PASS
 
 
 def _imap_connect(host=None, port=None, user=None, password=None):
-    """Connect to IMAP server. Uses global config if per-user args not provided."""
+    """Connect to IMAP server. Uses SSL for port 993, STARTTLS otherwise."""
+    h = host or IMAP_HOST
+    p = port or IMAP_PORT
+    u = user or EMAIL_USER
+    pw = password or EMAIL_PASS
     ctx = ssl.create_default_context()
-    ctx.check_hostname = False
-    ctx.verify_mode = ssl.CERT_NONE
-    mail = imaplib.IMAP4(host or IMAP_HOST, port or IMAP_PORT)
-    mail.starttls(ssl_context=ctx)
-    mail.login(user or EMAIL_USER, password or EMAIL_PASS)
+    if p == 993:
+        mail = imaplib.IMAP4_SSL(h, p, ssl_context=ctx)
+    else:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+        mail = imaplib.IMAP4(h, p)
+        mail.starttls(ssl_context=ctx)
+    mail.login(u, pw)
     return mail
 
 
@@ -39,7 +46,10 @@ def _get_user_creds(member_name=None):
     if member_name and member_name in app_config.FAMILY_MEMBERS:
         em = app_config.FAMILY_MEMBERS[member_name].get("email")
         if em and em["type"] == "imap":
-            password = os.environ.get(em["pass_env"], "") if em.get("pass_env") else ""
+            # Password can come from env var (pass_env) or directly (password field from chat setup)
+            password = em.get("password", "")
+            if not password and em.get("pass_env"):
+                password = os.environ.get(em["pass_env"], "")
             return {
                 "host": em.get("imap_host") or IMAP_HOST,
                 "port": em.get("imap_port") or IMAP_PORT,

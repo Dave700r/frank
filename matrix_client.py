@@ -84,6 +84,7 @@ _first_sync_done = False
 _batcher = humanize.MessageBatcher(delay=2.5)
 _pending_receipts = {}  # room_id -> receipt/statement data awaiting confirmation
 _pending_gmail_auth = set()  # sender matrix IDs awaiting Gmail auth code
+_pending_email_setup = {}  # sender -> setup flow state dict
 _recent_file_rooms = {}  # room_id -> timestamp, tracks rooms with recent file uploads
 
 
@@ -724,35 +725,179 @@ async def cmd_people(room_id: str):
 
 
 async def cmd_setup_email(room_id: str, args: str, sender: str, user_name: str):
-    """Walk a user through Gmail setup via chat."""
-    try:
-        import gmail_client as _gmail
-    except ImportError:
-        await _send(room_id, "Gmail support isn't installed. Need the google-auth and google-api-python-client packages.")
+    """Walk a user through email setup via chat."""
+    # Check if already set up
+    member = config.FAMILY_MEMBERS.get(user_name, {})
+    if member.get("email"):
+        await _send(room_id, "Your email is already connected! I scan it daily at 8 AM. Ask me to check your email anytime.")
         return
 
-    creds_path = _gmail._get_credentials_path()
-    if not creds_path.exists():
-        await _send(room_id, "Gmail OAuth credentials aren't configured yet. The admin needs to place gmail_credentials.json (from Google Cloud Console) on the server.")
-        return
-
-    if _gmail.is_setup(user_name):
-        await _send(room_id, "Your Gmail is already connected! I scan it daily at 8 AM. Want me to check it now? Just ask me to check your email.")
-        return
-
-    auth_url = _gmail.get_auth_url(user_name)
-    if not auth_url:
-        await _send(room_id, "Couldn't generate the authorization link. Check the server logs.")
-        return
-
-    _pending_gmail_auth.add(sender)
+    # Start the setup flow
+    _pending_email_setup[sender] = {"step": "choose_type", "user_name": user_name}
     await _send(room_id,
-        f"Let's get your Gmail connected! Here's what to do:\n\n"
-        f"1. Tap this link to sign in with Google:\n{auth_url}\n\n"
-        f"2. Sign into your Gmail account and click 'Allow'\n"
-        f"3. You'll see an authorization code — copy it and paste it back here\n\n"
-        f"I'm waiting for your code."
+        "Let's get your email connected! What kind of email do you have?\n\n"
+        "1. **Gmail** — easiest, just need an app password\n"
+        "2. **Other** (Outlook, Yahoo, ProtonMail, etc.) — need IMAP server details\n\n"
+        "Reply with **1** or **2**."
     )
+
+
+async def _handle_email_setup_flow(room_id: str, text: str, sender: str):
+    """Handle multi-step email setup conversation."""
+    setup = _pending_email_setup.get(sender)
+    if not setup:
+        return False
+
+    step = setup["step"]
+    user_name = setup["user_name"]
+    lower = text.strip().lower()
+
+    if step == "choose_type":
+        if lower in ("1", "gmail", "google"):
+            setup["type"] = "gmail_imap"
+            setup["imap_host"] = "imap.gmail.com"
+            setup["imap_port"] = 993
+            setup["smtp_host"] = "smtp.gmail.com"
+            setup["smtp_port"] = 587
+            setup["step"] = "gmail_email"
+            await _send(room_id, "Great! What's your Gmail address?")
+        elif lower in ("2", "other", "outlook", "yahoo", "protonmail"):
+            setup["type"] = "imap"
+            setup["step"] = "other_email"
+            await _send(room_id, "What's your email address?")
+        else:
+            await _send(room_id, "Just reply **1** for Gmail or **2** for other.")
+        return True
+
+    elif step == "gmail_email":
+        if "@" in text:
+            setup["user"] = text.strip()
+            setup["step"] = "gmail_password"
+            await _send(room_id,
+                f"Got it — {text.strip()}\n\n"
+                "Now I need a Gmail **App Password**. Here's how to get one:\n\n"
+                "1. Go to myaccount.google.com/apppasswords on your phone or laptop\n"
+                "2. You may need to enable 2-Step Verification first (myaccount.google.com/signinoptions/two-step-verification)\n"
+                "3. Create an app password — name it 'Frank' or anything you like\n"
+                "4. Google will show you a 16-character password — paste it here\n\n"
+                "It'll look something like: abcd efgh ijkl mnop"
+            )
+        else:
+            await _send(room_id, "That doesn't look like an email address. Try again?")
+        return True
+
+    elif step == "gmail_password":
+        # App passwords are 16 chars (with or without spaces)
+        password = text.strip().replace(" ", "")
+        if len(password) >= 12:
+            setup["password"] = password
+            setup["step"] = "confirm"
+            await _send(room_id,
+                f"Ready to connect:\n"
+                f"- Email: {setup['user']}\n"
+                f"- Server: Gmail (IMAP)\n\n"
+                f"Want me to test the connection? Reply **yes** to confirm."
+            )
+        else:
+            await _send(room_id, "That seems too short for an app password. It should be 16 characters (spaces are fine). Try again?")
+        return True
+
+    elif step == "other_email":
+        if "@" in text:
+            setup["user"] = text.strip()
+            setup["step"] = "other_host"
+            await _send(room_id,
+                f"Got it — {text.strip()}\n\n"
+                "What's the IMAP server address? (e.g., imap.outlook.com, imap.mail.yahoo.com)"
+            )
+        else:
+            await _send(room_id, "That doesn't look like an email address. Try again?")
+        return True
+
+    elif step == "other_host":
+        setup["imap_host"] = text.strip()
+        setup["imap_port"] = 993
+        setup["smtp_host"] = text.strip().replace("imap.", "smtp.")
+        setup["smtp_port"] = 587
+        setup["step"] = "other_password"
+        await _send(room_id, "And what's your password (or app password)?")
+        return True
+
+    elif step == "other_password":
+        setup["password"] = text.strip()
+        setup["step"] = "confirm"
+        await _send(room_id,
+            f"Ready to connect:\n"
+            f"- Email: {setup['user']}\n"
+            f"- Server: {setup['imap_host']}\n\n"
+            f"Reply **yes** to test the connection."
+        )
+        return True
+
+    elif step == "confirm":
+        if lower in ("yes", "y", "yep", "yeah", "sure", "go ahead", "do it"):
+            # Test the connection
+            try:
+                import imaplib
+                import ssl
+                ctx = ssl.create_default_context()
+                mail = imaplib.IMAP4_SSL(setup["imap_host"], setup["imap_port"], ssl_context=ctx)
+                mail.login(setup["user"], setup["password"])
+                mail.logout()
+            except Exception as e:
+                log.warning(f"Email test failed for {user_name}: {e}")
+                await _send(room_id,
+                    f"Connection failed: {e}\n\n"
+                    "Double-check your password/app password and try again. "
+                    "Say 'set up my email' to start over."
+                )
+                _pending_email_setup.pop(sender, None)
+                return True
+
+            # Save the account
+            _save_email_account(user_name, {
+                "type": "imap",
+                "imap_host": setup["imap_host"],
+                "imap_port": setup["imap_port"],
+                "smtp_host": setup.get("smtp_host", ""),
+                "smtp_port": setup.get("smtp_port", 587),
+                "user": setup["user"],
+                "password": setup["password"],
+            })
+
+            _pending_email_setup.pop(sender, None)
+            await _send(room_id,
+                "Connected! I'll scan your email every day at 8 AM and let you know about any bills or important messages. "
+                "You can also ask me to check your email anytime."
+            )
+            log.info(f"Email setup complete for {user_name}: {setup['user']}")
+        elif lower in ("no", "n", "cancel", "nope", "nevermind"):
+            _pending_email_setup.pop(sender, None)
+            await _send(room_id, "No problem, cancelled. Say 'set up my email' anytime to try again.")
+        else:
+            await _send(room_id, "Reply **yes** to test and save, or **no** to cancel.")
+        return True
+
+    return False
+
+
+def _save_email_account(user_name, account_data):
+    """Save a user's email config to email_accounts.json and update runtime config."""
+    import json
+    accounts_file = config._CONFIG_DIR / "email_accounts.json"
+    accounts = {}
+    if accounts_file.exists():
+        with open(accounts_file) as f:
+            accounts = json.load(f)
+
+    accounts[user_name] = account_data
+    with open(accounts_file, "w") as f:
+        json.dump(accounts, f, indent=2)
+    os.chmod(accounts_file, 0o600)
+
+    # Update runtime config
+    config.FAMILY_MEMBERS[user_name]["email"] = account_data
+    log.info(f"Email account saved for {user_name}")
 
 
 # Build command registry — only register enabled features
@@ -1084,6 +1229,12 @@ async def on_message(room: MatrixRoom, event: RoomMessageText):
                 log.error(f"Gmail auth failed for {user_name}: {e}")
                 await _send(room_id, "Something went wrong with the authorization. Let's try again — say 'set up my email' to start over.")
                 _pending_gmail_auth.discard(sender)
+            return
+
+    # Check for pending email setup flow
+    if sender in _pending_email_setup:
+        handled = await _handle_email_setup_flow(room_id, text, sender)
+        if handled:
             return
 
     # Check for commands (! prefix or / prefix)
