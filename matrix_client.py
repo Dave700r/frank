@@ -1562,6 +1562,20 @@ async def _handle_ai_message(text: str, user_name: str, room_id: str,
                         log.info(f"Email sent to {to_addr}: {subject}")
                     except Exception as e:
                         log.error(f"Email send failed: {e}")
+            elif act == "read_email":
+                email_id = action.get("email_id", "")
+                if email_id and email_client:
+                    try:
+                        full = email_client.get_full_email(email_id, member_name=user_name)
+                        if full:
+                            body_text = full["body"][:2000]
+                            extra_context = f"\nFULL EMAIL (id {email_id}):\nFrom: {full['from']}\nSubject: {full['subject']}\nDate: {full['date']}\n\n{body_text}"
+                            # Re-run AI with the full email as extra context
+                            followup = await _ai_respond(room_id, f"Here is the full email content I just read:\n{extra_context}\nNow answer the user's original question about this email.", user_name, is_dm)
+                            if followup:
+                                await _send(room_id, followup)
+                    except Exception as e:
+                        log.error(f"Read email failed: {e}")
             elif act == "search_photos":
                 query = action.get("query", "")
                 start_date = action.get("start_date", "")

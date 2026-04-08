@@ -220,7 +220,7 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
                 if user_emails:
                     email_lines = []
                     for e in user_emails:
-                        preview = e.get('body_preview', e.get('snippet', e.get('preview', '')))[:200]
+                        preview = e.get('body_preview', e.get('snippet', e.get('preview', '')))[:1000]
                         email_lines.append(f"From: {e['from']}\nSubject: {e.get('subject', '')}\nDate: {e.get('date', '')}\nPreview: {preview}\n")
                     email_context = f"\n{user_nick.upper()}'S INBOX — {len(user_emails)} recent:\n" + "\n---\n".join(email_lines)
                 else:

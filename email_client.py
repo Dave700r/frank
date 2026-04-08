@@ -88,21 +88,55 @@ def _decode_str(s):
 
 
 def _get_body(msg):
-    """Extract plain text body from email message."""
+    """Extract plain text body from email message. Falls back to HTML conversion."""
+    plain = None
+    html = None
     if msg.is_multipart():
         for part in msg.walk():
             ct = part.get_content_type()
-            if ct == "text/plain" and "attachment" not in str(part.get("Content-Disposition", "")):
-                payload = part.get_payload(decode=True)
-                if payload:
-                    charset = part.get_content_charset() or "utf-8"
-                    return payload.decode(charset, errors="replace")
+            disp = str(part.get("Content-Disposition", ""))
+            if "attachment" in disp:
+                continue
+            payload = part.get_payload(decode=True)
+            if not payload:
+                continue
+            charset = part.get_content_charset() or "utf-8"
+            text = payload.decode(charset, errors="replace")
+            if ct == "text/plain" and not plain:
+                plain = text
+            elif ct == "text/html" and not html:
+                html = text
     else:
         payload = msg.get_payload(decode=True)
         if payload:
             charset = msg.get_content_charset() or "utf-8"
-            return payload.decode(charset, errors="replace")
+            text = payload.decode(charset, errors="replace")
+            if msg.get_content_type() == "text/html":
+                html = text
+            else:
+                plain = text
+
+    if plain:
+        return plain
+    if html:
+        return _html_to_text(html)
     return ""
+
+
+def _html_to_text(html_content):
+    """Convert HTML email body to readable plain text."""
+    try:
+        import html2text
+        h = html2text.HTML2Text()
+        h.ignore_links = False
+        h.ignore_images = True
+        h.body_width = 0
+        return h.handle(html_content)
+    except ImportError:
+        import re
+        text = re.sub(r"<br\s*/?>", "\n", html_content, flags=re.IGNORECASE)
+        text = re.sub(r"<[^>]+>", "", text)
+        return text.strip()
 
 
 def get_unread(limit=10, member_name=None):
@@ -125,7 +159,7 @@ def get_unread(limit=10, member_name=None):
                 "from": _decode_str(msg["From"]),
                 "subject": _decode_str(msg["Subject"]),
                 "date": _decode_str(msg["Date"]),
-                "body_preview": _get_body(msg)[:500],
+                "body_preview": _get_body(msg)[:2000],
             })
         return results
     finally:
@@ -152,7 +186,7 @@ def get_recent(folder="INBOX", limit=10, member_name=None):
                 "from": _decode_str(msg["From"]),
                 "subject": _decode_str(msg["Subject"]),
                 "date": _decode_str(msg["Date"]),
-                "body_preview": _get_body(msg)[:500],
+                "body_preview": _get_body(msg)[:2000],
             })
         return results
     finally:
@@ -188,9 +222,29 @@ def search_inbox(query, limit=10, member_name=None):
                 "from": _decode_str(msg["From"]),
                 "subject": _decode_str(msg["Subject"]),
                 "date": _decode_str(msg["Date"]),
-                "body_preview": _get_body(msg)[:500],
+                "body_preview": _get_body(msg)[:2000],
             })
         return results
+    finally:
+        mail.logout()
+
+
+def get_full_email(msg_id_str, member_name=None):
+    """Get the full body of a specific email by message ID."""
+    creds = _get_user_creds(member_name)
+    mail = _imap_connect(creds["host"], creds["port"], creds["user"], creds["password"])
+    try:
+        mail.select("INBOX")
+        _, data = mail.fetch(msg_id_str.encode() if isinstance(msg_id_str, str) else msg_id_str, "(RFC822)")
+        msg = email.message_from_bytes(data[0][1])
+        body = _get_body(msg)
+        return {
+            "id": msg_id_str,
+            "from": _decode_str(msg["From"]),
+            "subject": _decode_str(msg["Subject"]),
+            "date": _decode_str(msg["Date"]),
+            "body": body[:3000],
+        }
     finally:
         mail.logout()
 
