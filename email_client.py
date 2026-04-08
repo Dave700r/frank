@@ -250,10 +250,10 @@ def get_full_email(msg_id_str, member_name=None):
 
 
 def delete_by_senders(sender_list, member_name=None):
-    """Delete all emails from the given sender patterns. Returns count deleted."""
+    """Move emails from the given senders to Trash. Returns count moved."""
     creds = _get_user_creds(member_name)
     mail = _imap_connect(creds["host"], creds["port"], creds["user"], creds["password"])
-    deleted = 0
+    moved = 0
     try:
         mail.select("INBOX")
         for sender in sender_list:
@@ -261,10 +261,11 @@ def delete_by_senders(sender_list, member_name=None):
             if not ids[0]:
                 continue
             for msg_id in ids[0].split():
+                mail.copy(msg_id, "Trash")
                 mail.store(msg_id, '+FLAGS', '\\Deleted')
-                deleted += 1
+                moved += 1
         mail.expunge()
-        return deleted
+        return moved
     finally:
         mail.logout()
 
