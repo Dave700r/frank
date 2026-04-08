@@ -220,6 +220,22 @@ async def _scan_email_for_member(member_name, client_mod, use_gmail=False):
         log.error(f"Bill scan error for {member_name}: {e}")
 
 
+
+async def job_email_cleanup():
+    """9:00 AM - Delete junk emails from configured senders."""
+    if not email_client or not config.JUNK_SENDERS:
+        return
+    try:
+        deleted = email_client.delete_by_senders(config.JUNK_SENDERS, member_name=config.OWNER)
+        if deleted > 0:
+            log.info(f"Email cleanup: deleted {deleted} junk emails")
+            dm_room = await matrix_client.get_dm_room(config.OWNER)
+            if dm_room:
+                await matrix_client._send(dm_room, f"Cleaned up {deleted} junk emails from your inbox.")
+    except Exception as e:
+        log.error(f"Email cleanup error: {e}")
+
+
 async def job_bill_scan():
     """8:00 AM - Scan all configured email accounts for bills."""
     scanned = set()
@@ -324,6 +340,7 @@ async def async_main():
     scheduler.add_job(job_grocery_push, CronTrigger(hour=9, minute=0), id="grocery_push")
     scheduler.add_job(job_low_stock_alert, CronTrigger(hour=18, minute=0), id="low_stock_alert")
     scheduler.add_job(job_bill_scan, CronTrigger(hour=8, minute=0), id="bill_scan")
+    scheduler.add_job(job_email_cleanup, CronTrigger(hour=9, minute=0), id="email_cleanup")
     scheduler.add_job(job_payment_reminders, CronTrigger(hour=10, minute=0), id="payment_reminders")
     scheduler.add_job(job_check_reminders, IntervalTrigger(minutes=1), id="check_reminders")
     scheduler.add_job(job_daily_log, CronTrigger(hour=23, minute=0), id="daily_log")

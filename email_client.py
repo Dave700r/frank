@@ -249,6 +249,26 @@ def get_full_email(msg_id_str, member_name=None):
         mail.logout()
 
 
+def delete_by_senders(sender_list, member_name=None):
+    """Delete all emails from the given sender patterns. Returns count deleted."""
+    creds = _get_user_creds(member_name)
+    mail = _imap_connect(creds["host"], creds["port"], creds["user"], creds["password"])
+    deleted = 0
+    try:
+        mail.select("INBOX")
+        for sender in sender_list:
+            _, ids = mail.search(None, f'(FROM "{sender}")')
+            if not ids[0]:
+                continue
+            for msg_id in ids[0].split():
+                mail.store(msg_id, '+FLAGS', '\\Deleted')
+                deleted += 1
+        mail.expunge()
+        return deleted
+    finally:
+        mail.logout()
+
+
 def send_email(to, subject, body):
     """Send an email as the owner. Only call from DM context."""
     msg = MIMEMultipart()

@@ -170,6 +170,65 @@ async def _send_image(room_id: str, file_path: str, body: str = "image"):
 
 # ─── Command Handlers ───
 
+
+async def cmd_junk(room_id: str, args: str):
+    """Manage junk sender list. Usage: !junk add <sender> / !junk list / !junk remove <sender>"""
+    import yaml
+    cfg_path = config._cfg_path
+
+    if not args:
+        await _send(room_id, "Usage:\n  !junk list — show auto-delete senders\n  !junk add <email> — add sender to auto-delete\n  !junk remove <email> — remove sender from list")
+        return
+
+    parts = args.split(None, 1)
+    action = parts[0].lower()
+
+    if action == "list":
+        senders = config.JUNK_SENDERS
+        if not senders:
+            await _send(room_id, "No junk senders configured yet.")
+        else:
+            lines = ["AUTO-DELETE SENDERS\n"]
+            for s in senders:
+                lines.append(f"  {s}")
+            lines.append(f"\n{len(senders)} senders — cleaned daily at 9 AM")
+            await _send(room_id, "\n".join(lines))
+
+    elif action == "add" and len(parts) > 1:
+        sender = parts[1].strip()
+        if sender not in config.JUNK_SENDERS:
+            config.JUNK_SENDERS.append(sender)
+            with open(cfg_path) as f:
+                cfg_data = yaml.safe_load(f)
+            cfg_data["junk_senders"] = config.JUNK_SENDERS
+            with open(cfg_path, "w") as f:
+                yaml.dump(cfg_data, f, default_flow_style=False)
+            await _send(room_id, f"Added {sender} to auto-delete list. Emails from this sender will be cleaned daily at 9 AM.")
+        else:
+            await _send(room_id, f"{sender} is already on the list.")
+
+    elif action == "remove" and len(parts) > 1:
+        sender = parts[1].strip()
+        if sender in config.JUNK_SENDERS:
+            config.JUNK_SENDERS.remove(sender)
+            with open(cfg_path) as f:
+                cfg_data = yaml.safe_load(f)
+            cfg_data["junk_senders"] = config.JUNK_SENDERS
+            with open(cfg_path, "w") as f:
+                yaml.dump(cfg_data, f, default_flow_style=False)
+            await _send(room_id, f"Removed {sender} from auto-delete list.")
+        else:
+            await _send(room_id, f"{sender} isn't on the list.")
+
+    elif action == "clean":
+        if email_client and config.JUNK_SENDERS:
+            deleted = email_client.delete_by_senders(config.JUNK_SENDERS)
+            await _send(room_id, f"Done — deleted {deleted} junk emails.")
+        else:
+            await _send(room_id, "No junk senders configured. Use !junk add <sender> first.")
+    else:
+        await _send(room_id, "Unknown action. Use: list, add, remove, or clean")
+
 async def cmd_list(room_id: str):
     items = db.get_shopping_list()
     if not items:
@@ -720,6 +779,8 @@ async def cmd_help(room_id: str):
 
     if config.IMMICH_ENABLED:
         sections.append(
+            "EMAIL CLEANUP\n"
+            "!junk list/add/remove/clean - Manage auto-delete senders\n\n"
             "PHOTOS\n"
             "!photos <search> - Search family photos\n"
             "!albums - List photo albums\n"
@@ -1083,6 +1144,7 @@ if config.BUDDY_ENABLED:
 if config.IMMICH_ENABLED:
     COMMANDS.update({
         "photos": lambda rid, args, room, sender, uname: cmd_photos(rid, args),
+        "junk": lambda rid, args, room, sender, uname: cmd_junk(rid, args),
         "albums": lambda rid, args, room, sender, uname: cmd_albums(rid),
         "people": lambda rid, args, room, sender, uname: cmd_people(rid),
     })

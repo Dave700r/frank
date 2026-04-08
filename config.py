@@ -20,6 +20,7 @@ if not _CONFIG_FILE.exists():
 
 with open(_CONFIG_FILE) as f:
     _cfg = yaml.safe_load(f)
+_cfg_path = _CONFIG_FILE
 
 # --- Bot ---
 BOT_NAME = _cfg["bot"]["name"]
@@ -162,3 +163,6 @@ VOICE_PORT = _voice.get("port", 5123)
 # --- Persona ---
 PERSONA_FILE = _cfg.get("persona_file")
 SPANISH_LEARNERS = _cfg.get("spanish_learners", [])
+
+# Junk email senders to auto-delete
+JUNK_SENDERS = _cfg.get("junk_senders", [])
