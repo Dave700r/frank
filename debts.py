@@ -37,9 +37,9 @@ def _calc_next_reminder(created_at, reminder_count):
     """Calculate when the next reminder should fire.
 
     Schedule:
-      0 reminders sent -> remind same day (created_at date, 10 AM)
-      1 reminder sent  -> 2 days after creation
-      2+ reminders     -> daily
+      0 reminders sent -> next day at 10 AM
+      1 reminder sent  -> 3 days after first reminder
+      2+ reminders     -> weekly
     """
     if isinstance(created_at, str):
         created_at = datetime.strptime(created_at, "%Y-%m-%d %H:%M:%S")
@@ -47,16 +47,14 @@ def _calc_next_reminder(created_at, reminder_count):
     base_date = created_at.replace(hour=10, minute=0, second=0, microsecond=0)
 
     if reminder_count == 0:
-        # Same day — but if it's already past 10 AM, send within the hour
-        now = datetime.now()
-        if now > base_date:
-            return now + timedelta(minutes=5)
-        return base_date
+        # First reminder: next day at 10 AM
+        return base_date + timedelta(days=1)
     elif reminder_count == 1:
-        return base_date + timedelta(days=2)
+        # Second reminder: 3 days later
+        return base_date + timedelta(days=4)
     else:
-        # Daily after that
-        return datetime.now().replace(hour=10, minute=0, second=0, microsecond=0) + timedelta(days=1)
+        # After that: weekly
+        return datetime.now().replace(hour=10, minute=0, second=0, microsecond=0) + timedelta(days=7)
 
 
 def add_debt(creditor, debtor, amount, description=None):
