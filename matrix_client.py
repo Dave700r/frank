@@ -1546,6 +1546,33 @@ async def _handle_ai_message(text: str, user_name: str, room_id: str,
             reply = result["reply"]
             actions = result.get("actions", [])
 
+        # Detect photo requests and trigger Immich search directly
+        if reply is None and immich_client:
+            lower_text = text.lower()
+            photo_words = ("photo", "picture", "pic ", "pics ", "image", "show me", "send me")
+            if any(pw in lower_text for pw in photo_words):
+                import re as _re
+                # Extract what they want a photo of
+                photo_match = _re.search(
+                    r'(?:photo|picture|pic|pics|image|show me|send me)(?:s)?(?:\s+(?:a|an|some|any|of|from))?\s+(.+)',
+                    lower_text
+                )
+                if photo_match:
+                    query = photo_match.group(1).strip().rstrip('?.!')
+                    if query:
+                        results = immich_client.search_photos(query, limit=3)
+                        if results:
+                            path = immich_client.download_thumbnail(results[0]["id"])
+                            if path:
+                                await _send_image(room_id, path, f"Photo: {query}")
+                            # Let AI still respond naturally
+                            result = ai.handle_message(
+                                text, user_name=user_name, is_private=is_dm, chat_id=chat_id,
+                                extra_context=f"\n[You just found and sent {len(results)} photo(s) matching '{query}' from Immich. The first one has been sent to the chat. Don't use search_photos action again.]"
+                            )
+                            reply = result["reply"]
+                            actions = [a for a in result.get("actions", []) if a.get("action") != "search_photos"]
+
         # Normal AI handling
         if reply is None:
             result = ai.handle_message(text, user_name=user_name, is_private=is_dm, chat_id=chat_id)
