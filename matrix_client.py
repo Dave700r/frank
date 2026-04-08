@@ -1562,6 +1562,21 @@ async def _handle_ai_message(text: str, user_name: str, room_id: str,
                         log.info(f"Email sent to {to_addr}: {subject}")
                     except Exception as e:
                         log.error(f"Email send failed: {e}")
+            elif act == "search_email":
+                query = action.get("query", "")
+                if query and email_client:
+                    try:
+                        results = email_client.search_inbox(query, limit=5, member_name=user_name)
+                        if results:
+                            lines = [f"Found {len(results)} email(s) matching '{query}':"]
+                            for e in results:
+                                preview = e.get('body_preview', '')[:300]
+                                lines.append(f"\nID: {e['id']} | From: {e['from']}\nSubject: {e.get('subject', '')}\nDate: {e.get('date', '')}\nPreview: {preview}")
+                            await _send(room_id, "\n".join(lines))
+                        else:
+                            await _send(room_id, f"No emails found matching '{query}'.")
+                    except Exception as e:
+                        log.error(f"Search email failed: {e}")
             elif act == "read_email":
                 email_id = action.get("email_id", "")
                 if email_id and email_client:

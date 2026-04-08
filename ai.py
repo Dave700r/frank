@@ -209,11 +209,11 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
                 if em_type == "gmail":
                     try:
                         import gmail_client
-                        user_emails = gmail_client.get_unread(limit=5, member_name=user_name)
+                        user_emails = gmail_client.get_recent(limit=15, member_name=user_name)
                     except Exception:
                         user_emails = []
                 elif email_client:
-                    user_emails = email_client.get_unread(limit=5, member_name=user_name)
+                    user_emails = email_client.get_recent(limit=15, member_name=user_name)
                 else:
                     user_emails = []
 
@@ -224,7 +224,7 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
                         email_lines.append(f"From: {e['from']}\nSubject: {e.get('subject', '')}\nDate: {e.get('date', '')}\nPreview: {preview}\n")
                     email_context = f"\n{user_nick.upper()}'S INBOX — {len(user_emails)} recent:\n" + "\n---\n".join(email_lines)
                 else:
-                    email_context = f"\n{user_nick.upper()}'S INBOX: No unread emails."
+                    email_context = f"\n{user_nick.upper()}'S INBOX: No recent emails."
 
                 # Bot's own inbox — only visible to owner
                 if user_name == config.OWNER and config.AGENTMAIL_ENABLED:
