@@ -17,8 +17,16 @@ def get_weather():
             f"&daily=temperature_2m_max,temperature_2m_min,precipitation_sum,weather_code"
             f"&timezone={config.TIMEZONE}"
         )
-        with urllib.request.urlopen(url, timeout=10) as r:
-            data = json.loads(r.read())
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(url, timeout=15) as r:
+                    data = json.loads(r.read())
+                break
+            except Exception:
+                if attempt == 2:
+                    raise
+                import time
+                time.sleep(2)
 
         current = data["current"]
         daily = data["daily"]
@@ -69,8 +77,16 @@ def get_crypto():
     """Get BTC and gold prices."""
     try:
         url = "https://api.coingecko.com/api/v3/simple/price?ids=bitcoin&vs_currencies=usd,cad&include_24hr_change=true"
-        with urllib.request.urlopen(url, timeout=10) as r:
-            data = json.loads(r.read())
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(url, timeout=15) as r:
+                    data = json.loads(r.read())
+                break
+            except Exception:
+                if attempt == 2:
+                    raise
+                import time
+                time.sleep(2)
         btc = data["bitcoin"]
         btc_usd = btc["usd"]
         btc_cad = btc["cad"]
@@ -136,8 +152,16 @@ def get_incidents():
             f"&fields={{incidents{{type,geometry{{type,coordinates}},properties{{iconCategory,magnitudeOfDelay,events{{description}},from,to}}}}}}"
             f"&language=en-US&categoryFilter=0,1,2,3,4,5,6,7,8,9,10,11,14"
         )
-        with urllib.request.urlopen(url, timeout=10) as r:
-            data = json.loads(r.read())
+        for attempt in range(3):
+            try:
+                with urllib.request.urlopen(url, timeout=15) as r:
+                    data = json.loads(r.read())
+                break
+            except Exception:
+                if attempt == 2:
+                    raise
+                import time
+                time.sleep(2)
 
         incidents = data.get("incidents", [])
         if not incidents:
