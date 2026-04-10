@@ -229,9 +229,7 @@ async def job_email_cleanup():
         deleted = email_client.delete_by_senders(config.JUNK_SENDERS, member_name=config.OWNER)
         if deleted > 0:
             log.info(f"Email cleanup: deleted {deleted} junk emails")
-            dm_room = await matrix_client.get_dm_room(config.OWNER)
-            if dm_room:
-                await matrix_client._send(dm_room, f"Cleaned up {deleted} junk emails from your inbox.")
+            await matrix_client.send_to_user_by_name(config.OWNER, f"Cleaned up {deleted} junk emails from your inbox.")
     except Exception as e:
         log.error(f"Email cleanup error: {e}")
 
