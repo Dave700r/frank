@@ -166,3 +166,7 @@ SPANISH_LEARNERS = _cfg.get("spanish_learners", [])
 
 # Junk email senders to auto-delete
 JUNK_SENDERS = _cfg.get("junk_senders", [])
+
+# AI provider settings
+AI_PROVIDER = _cfg.get("ai_provider", "openrouter")
+AI_ADVISOR_ENABLED = _cfg.get("ai_advisor_enabled", False)

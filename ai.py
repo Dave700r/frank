@@ -54,8 +54,65 @@ def _api_key():
     return os.environ["OPENROUTER_API_KEY"]
 
 
-def _chat(messages, system=None, model=None, max_tokens=300):
-    """Make an OpenAI-compatible chat completion call to OpenRouter."""
+def _get_anthropic_client():
+    """Get Anthropic client for direct Claude API calls."""
+    import anthropic
+    return anthropic.Anthropic(api_key=os.environ.get("ANTHROPIC_API_KEY", ""))
+
+
+def _chat_claude(messages, system=None, max_tokens=300, use_advisor=True):
+    """Direct Claude API call with optional Opus advisor."""
+    client = _get_anthropic_client()
+
+    kwargs = {
+        "model": "claude-haiku-4-5-20251001",
+        "max_tokens": max_tokens,
+        "messages": messages,
+    }
+    if system:
+        kwargs["system"] = system
+
+    # Add advisor tool if enabled
+    if use_advisor and config.AI_ADVISOR_ENABLED:
+        kwargs["betas"] = ["advisor-tool-2026-03-01"]
+        kwargs["tools"] = [{
+            "type": "advisor_20260301",
+            "name": "advisor",
+            "model": "claude-opus-4-6",
+        }]
+
+    try:
+        response = client.beta.messages.create(**kwargs) if use_advisor and config.AI_ADVISOR_ENABLED else client.messages.create(**kwargs)
+    except Exception as e:
+        import logging
+        logging.getLogger("family-bot.ai").warning(f"Claude API error: {e}, falling back to OpenRouter")
+        return _chat_openrouter(messages, system=system, max_tokens=max_tokens)
+
+    # Track usage
+    try:
+        usage = response.usage
+        if usage:
+            import sys
+            sys.path.insert(0, str(Path.home() / "gatekeeper"))
+            import token_tracker
+            token_tracker.log_usage(
+                bot="frank",
+                model="claude-haiku-4.5+advisor" if use_advisor and config.AI_ADVISOR_ENABLED else "claude-haiku-4.5",
+                prompt_tokens=usage.input_tokens,
+                completion_tokens=usage.output_tokens,
+            )
+    except Exception:
+        pass
+
+    # Extract text from response
+    for block in response.content:
+        if hasattr(block, "text"):
+            return block.text
+    return ""
+
+
+def _chat_openrouter(messages, system=None, model=None, max_tokens=300):
+    """Fallback: OpenRouter API call."""
     model = model or MODEL
     payload = {"model": model, "max_tokens": max_tokens, "messages": messages}
     if system:
@@ -90,6 +147,18 @@ def _chat(messages, system=None, model=None, max_tokens=300):
         pass
 
     return data["choices"][0]["message"]["content"]
+
+
+def _chat(messages, system=None, model=None, max_tokens=300):
+    """Route to Claude API (with advisor) or OpenRouter based on config."""
+    # Vision model always goes through OpenRouter (Gemini)
+    if model and model != MODEL:
+        return _chat_openrouter(messages, system=system, model=model, max_tokens=max_tokens)
+
+    if config.AI_PROVIDER == "claude" and os.environ.get("ANTHROPIC_API_KEY"):
+        return _chat_claude(messages, system=system, max_tokens=max_tokens)
+    else:
+        return _chat_openrouter(messages, system=system, model=model, max_tokens=max_tokens)
 
 
 def get_inventory_context():
