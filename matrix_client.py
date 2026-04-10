@@ -1552,26 +1552,67 @@ async def _handle_ai_message(text: str, user_name: str, room_id: str,
             photo_words = ("photo", "picture", "pic ", "pics ", "image", "show me", "send me")
             if any(pw in lower_text for pw in photo_words):
                 import re as _re
+                import random as _random
                 # Extract what they want a photo of
                 photo_match = _re.search(
                     r'(?:photo|picture|pic|pics|image|show me|send me)(?:s)?(?:\s+(?:a|an|some|any|of|from))?\s+(.+)',
                     lower_text
                 )
                 if photo_match:
-                    query = photo_match.group(1).strip().rstrip('?.!')
-                    if query:
-                        results = immich_client.search_photos(query, limit=3)
-                        if results:
-                            path = immich_client.download_thumbnail(results[0]["id"])
-                            if path:
-                                await _send_image(room_id, path, f"Photo: {query}")
-                            # Let AI still respond naturally
-                            result = ai.handle_message(
-                                text, user_name=user_name, is_private=is_dm, chat_id=chat_id,
-                                extra_context=f"\n[You just found and sent {len(results)} photo(s) matching '{query}' from Immich. The first one has been sent to the chat. Don't use search_photos action again.]"
-                            )
-                            reply = result["reply"]
-                            actions = [a for a in result.get("actions", []) if a.get("action") != "search_photos"]
+                    raw_query = photo_match.group(1).strip().rstrip('?.!')
+                    # Strip filler words to get the core subject
+                    query = _re.sub(r'\b(of|a|an|the|my|our|some|any|random|me|and|to|for)\b', '', raw_query).strip()
+                    query = _re.sub(r'\s+', ' ', query).strip()
+
+                    # Check if query is a family member name — use face search
+                    family_names = {n: m.get("nickname", n.title()) for n, m in config.FAMILY_MEMBERS.items()}
+                    matched_person = None
+                    for name, nick in family_names.items():
+                        if name in query.lower() or nick.lower() in query.lower():
+                            matched_person = nick
+                            break
+
+                    # Detect DM target: "send to paula", "dm paula", "direct message paula"
+                    dm_target = None
+                    dm_match = _re.search(r'(?:send|dm|direct message|message)(?:\s+(?:it|that|this))?\s+to\s+(\w+)', lower_text)
+                    if dm_match:
+                        target_name = dm_match.group(1).lower()
+                        for name, member in config.FAMILY_MEMBERS.items():
+                            if name == target_name or member.get("nickname", "").lower() == target_name:
+                                dm_target = name
+                                break
+
+                    if query and matched_person:
+                        results = immich_client.search_by_person(matched_person, limit=10)
+                    elif query:
+                        results = immich_client.search_photos(query, limit=5)
+                    else:
+                        results = []
+
+                    # Handle "random" — pick a random result
+                    if results and "random" in lower_text:
+                        chosen = _random.choice(results)
+                        results = [chosen]
+
+                    if results:
+                        path = immich_client.download_thumbnail(results[0]["id"])
+                        if path:
+                            # Send to DM target or current room
+                            if dm_target:
+                                await send_image_to_user_by_name(dm_target, path, f"Photo of {matched_person or query}")
+                                await _send(room_id, f"Sent a photo of {matched_person or query} to {config.FAMILY_MEMBERS[dm_target].get('nickname', dm_target.title())}.")
+                            else:
+                                await _send_image(room_id, path, f"Photo: {matched_person or query}")
+                        extra = f"\n[You found and sent {len(results)} photo(s) of '{matched_person or query}' from Immich"
+                        if dm_target:
+                            extra += f" via DM to {config.FAMILY_MEMBERS[dm_target].get('nickname', dm_target.title())}"
+                        extra += ". Don't use search_photos action again.]"
+                        result = ai.handle_message(
+                            text, user_name=user_name, is_private=is_dm, chat_id=chat_id,
+                            extra_context=extra
+                        )
+                        reply = result["reply"]
+                        actions = [a for a in result.get("actions", []) if a.get("action") != "search_photos"]
 
         # Normal AI handling
         if reply is None:
@@ -1845,6 +1886,19 @@ async def send_to_user_by_name(name: str, text: str):
     member = config.FAMILY_MEMBERS.get(name.lower())
     if member and member.get("matrix_id") and client:
         await _send_to_user(member["matrix_id"], text)
+
+
+async def send_image_to_user_by_name(name: str, file_path: str, body: str = "image"):
+    """Send an image DM to a family member by name."""
+    member = config.FAMILY_MEMBERS.get(name.lower())
+    if not member or not member.get("matrix_id") or not client:
+        return
+    matrix_id = member["matrix_id"]
+    # Find or create DM room
+    for room_id, room in client.rooms.items():
+        if room.member_count == 2 and matrix_id in [u.user_id for u in room.users.values()]:
+            await _send_image(room_id, file_path, body)
+            return
 
 
 # ─── External API for other services ───
