@@ -106,8 +106,12 @@ def search_by_person(name, limit=10):
         if not match:
             return []
 
-        data = _get(f"/people/{match['id']}")
-        assets = data.get("assets", [])[:limit]
+        data = _post("/search/metadata", json_data={
+            "personIds": [match["id"]],
+            "page": 1,
+            "size": limit,
+        })
+        assets = data.get("assets", {}).get("items", [])
         return [_format_asset(a) for a in assets]
     except Exception as e:
         log.error(f"Immich person search error: {e}")
