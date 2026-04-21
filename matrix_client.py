@@ -1463,13 +1463,18 @@ async def on_message(room: MatrixRoom, event: RoomMessageText):
                 # Let AI handle it — it's better at extracting the item name from natural language
                 break
         else:
-            # No add intent found — check for list triggers
+            # No add intent found — check for list triggers, but defer to AI when
+            # the user is asking to route the list somewhere ("send ... to Paula"),
+            # so the AI can dispatch via send_message instead of dumping locally.
+            has_routing_intent = " to " in lower and any(
+                name in lower for name in config.FAMILY_MEMBERS
+            )
             list_triggers = ("what do we need", "grocery list", "shopping list", "what's on the list",
                              "show me the list", "what do we have to buy", "what do we need to buy",
                              "what's on the grocery", "show the list", "what we need",
                              "can you show me the grocery", "send me the list", "send the list",
                              "what are we getting", "what should we get")
-            if any(trigger in lower for trigger in list_triggers):
+            if not has_routing_intent and any(trigger in lower for trigger in list_triggers):
                 await cmd_list(room_id)
                 return
 
