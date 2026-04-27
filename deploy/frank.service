@@ -1,0 +1,20 @@
+[Unit]
+Description=Frank Family Bot (Matrix)
+Documentation=https://github.com/Dave700r/frank
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+WorkingDirectory=/home/dave/family-bot
+ExecStart=/home/dave/family-bot-env/bin/python3 /home/dave/family-bot/matrix_bot.py
+Restart=on-failure
+RestartSec=5
+TimeoutStopSec=20
+KillSignal=SIGINT
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=frank
+
+[Install]
+WantedBy=default.target

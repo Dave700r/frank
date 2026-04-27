@@ -57,16 +57,13 @@ if config.VOICE_ENABLED:
 if config.TELEGRAM_ENABLED:
     import telegram_client
 
-import sys
-
-_log_handlers = [logging.FileHandler(Path.home() / "family-bot.log")]
-if sys.stderr.isatty():
-    _log_handlers.append(logging.StreamHandler())
-
 logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     level=logging.INFO,
-    handlers=_log_handlers,
+    handlers=[
+        logging.StreamHandler(),
+        logging.FileHandler(Path.home() / "family-bot.log"),
+    ],
 )
 log = logging.getLogger("family-bot")
 
