@@ -6,12 +6,24 @@ Standalone Matrix service — no Telegram dependency.
 import asyncio
 import logging
 import json
-from datetime import datetime
+from datetime import datetime, date
 from pathlib import Path
+
+from dotenv import load_dotenv
+load_dotenv(Path(__file__).parent / ".env")
 
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.date import DateTrigger
 from apscheduler.triggers.interval import IntervalTrigger
+from apscheduler.jobstores.sqlalchemy import SQLAlchemyJobStore
+from apscheduler.jobstores.base import JobLookupError
+
+_BOT_DIR = Path(__file__).parent
+_JOBS_DB = _BOT_DIR / "jobs.db"
+_CHECKIN_SCHEDULE_STATE = _BOT_DIR / ".checkin_schedule_state.json"
+_CHECKIN_SENT_STATE = _BOT_DIR / ".checkin_sent_state.json"
+_CHECKIN_DEDUP_HOURS = 18
 
 import config
 import briefing
@@ -19,6 +31,7 @@ import conversation_log
 import reminders
 import episodes
 import dream
+import checkin
 import matrix_client
 import debts
 
@@ -44,13 +57,16 @@ if config.VOICE_ENABLED:
 if config.TELEGRAM_ENABLED:
     import telegram_client
 
+import sys
+
+_log_handlers = [logging.FileHandler(Path.home() / "family-bot.log")]
+if sys.stderr.isatty():
+    _log_handlers.append(logging.StreamHandler())
+
 logging.basicConfig(
     format="%(asctime)s [%(name)s] %(levelname)s: %(message)s",
     level=logging.INFO,
-    handlers=[
-        logging.StreamHandler(),
-        logging.FileHandler(Path.home() / "family-bot.log"),
-    ],
+    handlers=_log_handlers,
 )
 log = logging.getLogger("family-bot")
 
@@ -329,20 +345,116 @@ async def job_dream():
     await dream.dream(ai_fn=ai_consolidate)
 
 
+
+# Scheduler reference for adding one-off jobs
+_scheduler = None
+
+
+def _load_json_state(path):
+    try:
+        return json.loads(path.read_text())
+    except (FileNotFoundError, json.JSONDecodeError):
+        return {}
+
+
+def _write_json_state(path, data):
+    try:
+        path.write_text(json.dumps(data))
+    except OSError as e:
+        log.warning("Failed to write %s: %s", path.name, e)
+
+
+async def _do_checkin(name, msg):
+    """Send a scheduled check-in DM, with 18h send-side dedup.
+
+    Top-level (not a closure) so apscheduler's SQLAlchemyJobStore can
+    pickle the function reference for restart-safe persistence.
+    """
+    state = _load_json_state(_CHECKIN_SENT_STATE)
+    last_sent = state.get(name)
+    if last_sent:
+        try:
+            last_dt = datetime.fromisoformat(last_sent)
+            elapsed = (datetime.now() - last_dt).total_seconds()
+            if elapsed < _CHECKIN_DEDUP_HOURS * 3600:
+                log.warning(
+                    "Skipping check-in for %s — already sent at %s (%.1fh ago, <%dh dedup window)",
+                    name, last_sent, elapsed / 3600, _CHECKIN_DEDUP_HOURS,
+                )
+                return
+        except ValueError:
+            pass
+
+    await matrix_client.send_to_user_by_name(name, msg)
+    log.info("Check-in sent to %s", name)
+    state[name] = datetime.now().isoformat()
+    _write_json_state(_CHECKIN_SENT_STATE, state)
+
+
+async def job_schedule_checkins():
+    """7:00 AM - Schedule random check-in DMs for today (idempotent per calendar day)."""
+    if not _scheduler:
+        log.warning("Scheduler not ready; cannot schedule check-ins")
+        return
+
+    today = date.today().isoformat()
+    state = _load_json_state(_CHECKIN_SCHEDULE_STATE)
+    if state.get("date") == today:
+        log.info("Check-ins already scheduled for %s — skipping re-schedule", today)
+        return
+
+    schedule = checkin.get_random_hours()
+    now = datetime.now()
+    for name, hour, minute, msg in schedule:
+        run_at = now.replace(hour=hour, minute=minute, second=0, microsecond=0)
+        if run_at <= now:
+            log.info(
+                "Skipping check-in for %s — random time %02d:%02d already passed",
+                name, hour, minute,
+            )
+            continue
+
+        job_id = f"checkin_{name}"
+        try:
+            _scheduler.remove_job(job_id)
+        except JobLookupError:
+            pass
+        except Exception as e:
+            log.warning("remove_job(%s) failed: %s", job_id, e)
+
+        _scheduler.add_job(
+            _do_checkin,
+            DateTrigger(run_date=run_at),
+            args=[name, msg],
+            id=job_id,
+            replace_existing=True,
+        )
+        log.info("Scheduled check-in for %s at %02d:%02d", name, hour, minute)
+
+    _write_json_state(
+        _CHECKIN_SCHEDULE_STATE,
+        {"date": today, "scheduled_at": now.isoformat()},
+    )
+
 # ─── Main ───
 
 async def async_main():
-    # Start scheduler
-    scheduler = AsyncIOScheduler(timezone=config.TIMEZONE)
-    scheduler.add_job(job_morning_briefing, CronTrigger(hour=6, minute=30), id="morning_briefing")
-    scheduler.add_job(job_grocery_push, CronTrigger(hour=9, minute=0), id="grocery_push")
-    scheduler.add_job(job_low_stock_alert, CronTrigger(hour=18, minute=0), id="low_stock_alert")
-    scheduler.add_job(job_bill_scan, CronTrigger(hour=8, minute=0), id="bill_scan")
-    scheduler.add_job(job_email_cleanup, CronTrigger(hour=9, minute=0), id="email_cleanup")
-    scheduler.add_job(job_payment_reminders, CronTrigger(hour=10, minute=0), id="payment_reminders")
-    scheduler.add_job(job_check_reminders, IntervalTrigger(minutes=1), id="check_reminders")
-    scheduler.add_job(job_daily_log, CronTrigger(hour=23, minute=0), id="daily_log")
-    scheduler.add_job(job_dream, CronTrigger(hour=2, minute=0), id="dream")
+    scheduler = AsyncIOScheduler(
+        timezone=config.TIMEZONE,
+        jobstores={"default": SQLAlchemyJobStore(url=f"sqlite:///{_JOBS_DB}")},
+    )
+    scheduler.add_job(job_morning_briefing, CronTrigger(hour=6, minute=30), id="morning_briefing", replace_existing=True)
+    scheduler.add_job(job_grocery_push, CronTrigger(hour=9, minute=0), id="grocery_push", replace_existing=True)
+    scheduler.add_job(job_low_stock_alert, CronTrigger(hour=18, minute=0), id="low_stock_alert", replace_existing=True)
+    scheduler.add_job(job_bill_scan, CronTrigger(hour=8, minute=0), id="bill_scan", replace_existing=True)
+    scheduler.add_job(job_email_cleanup, CronTrigger(hour=9, minute=0), id="email_cleanup", replace_existing=True)
+    scheduler.add_job(job_payment_reminders, CronTrigger(hour=10, minute=0), id="payment_reminders", replace_existing=True)
+    scheduler.add_job(job_check_reminders, IntervalTrigger(minutes=1), id="check_reminders", replace_existing=True)
+    scheduler.add_job(job_daily_log, CronTrigger(hour=23, minute=0), id="daily_log", replace_existing=True)
+    scheduler.add_job(job_dream, CronTrigger(hour=2, minute=0), id="dream", replace_existing=True)
+    scheduler.add_job(job_schedule_checkins, CronTrigger(hour=7, minute=0), id="schedule_checkins", replace_existing=True)
+    global _scheduler
+    _scheduler = scheduler
     scheduler.start()
     log.info("Scheduler started with %d jobs", len(scheduler.get_jobs()))
 
