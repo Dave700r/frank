@@ -16,8 +16,10 @@ _db = None
 def _get_db():
     global _db
     if _db is None:
-        _db = sqlite3.connect(str(DB_PATH))
+        _db = sqlite3.connect(str(DB_PATH), check_same_thread=False)
         _db.row_factory = sqlite3.Row
+        _db.execute("PRAGMA journal_mode=WAL")
+        _db.execute("PRAGMA synchronous=NORMAL")
         _db.execute("""
             CREATE TABLE IF NOT EXISTS episodes (
                 id INTEGER PRIMARY KEY,

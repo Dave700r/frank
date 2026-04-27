@@ -1,4 +1,5 @@
 """AI layer - OpenRouter (OpenAI-compatible) for natural language and summaries."""
+import logging
 import os
 import json
 import base64
@@ -7,6 +8,8 @@ from pathlib import Path
 import config
 import memory
 import episodes
+
+log = logging.getLogger("family-bot.ai")
 
 db = None
 recipe_db = None
@@ -84,8 +87,7 @@ def _chat_claude(messages, system=None, max_tokens=300, use_advisor=True):
     try:
         response = client.beta.messages.create(**kwargs) if use_advisor and config.AI_ADVISOR_ENABLED else client.messages.create(**kwargs)
     except Exception as e:
-        import logging
-        logging.getLogger("family-bot.ai").warning(f"Claude API error: {e}, falling back to OpenRouter")
+        log.warning(f"Claude API error: {e}, falling back to OpenRouter")
         return _chat_openrouter(messages, system=system, max_tokens=max_tokens)
 
     # Track usage
@@ -101,8 +103,8 @@ def _chat_claude(messages, system=None, max_tokens=300, use_advisor=True):
                 prompt_tokens=usage.input_tokens,
                 completion_tokens=usage.output_tokens,
             )
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning(f"Claude token tracking failed: {e}")
 
     # Extract text from response
     for block in response.content:
@@ -143,8 +145,8 @@ def _chat_openrouter(messages, system=None, model=None, max_tokens=300):
                 prompt_tokens=usage.get("prompt_tokens", 0),
                 completion_tokens=usage.get("completion_tokens", 0),
             )
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning(f"OpenRouter token tracking failed: {e}")
 
     return data["choices"][0]["message"]["content"]
 
@@ -192,8 +194,8 @@ def get_inventory_context():
                 if p['ingredients']:
                     for ing in p['ingredients']:
                         lines.append(f"    - {ing}")
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning(f"Meal plan ingredients lookup failed: {e}")
 
     return "\n".join(lines)
 
@@ -206,8 +208,8 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
     try:
         import debts
         context += "\n\n" + debts.get_debt_summary()
-    except Exception:
-        pass
+    except Exception as e:
+        log.warning(f"Debt summary load failed: {e}")
     # Search both memory systems
     chroma_memories = memory.search(text, n_results=3)
     mem0_memories = mem0_memory.search(text, user_id=user_name.lower() if user_name else "family", limit=5) if mem0_memory else []
@@ -239,7 +241,8 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
                     search_context += "Sources:\n"
                     for r in results["results"][:3]:
                         search_context += f"  - {r['title']}: {r['content'][:200]}\n"
-        except Exception:
+        except Exception as e:
+            log.warning(f"Web search failed: {e}")
             search_context = ""
 
     # Add recipe context if recipe-related
@@ -253,8 +256,8 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
                 for r in all_recipes:
                     recipe_context += f"  #{r['id']} {r['name']} ({r['cuisine'] or 'no cuisine'})\n"
                 recipe_context += "Use /recipe <number> to show full recipe details.\n"
-        except Exception:
-            pass
+        except Exception as e:
+            log.warning(f"Recipe list lookup failed: {e}")
 
     # Add finance context if the message seems finance-related
     finance_context = ""
@@ -279,7 +282,8 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
                     try:
                         import gmail_client
                         user_emails = gmail_client.get_recent(limit=15, member_name=user_name)
-                    except Exception:
+                    except Exception as e:
+                        log.warning(f"Gmail get_recent failed for {user_name}: {e}")
                         user_emails = []
                 elif email_client:
                     user_emails = email_client.get_recent(limit=15, member_name=user_name)
@@ -302,8 +306,8 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
                         frank_emails = agentmail_client.get_recent_with_content(limit=3)
                         bot_address = config.AGENTMAIL_ADDRESS or "bot email"
                         email_context += f"\n{config.BOT_NAME.upper()}'S INBOX ({bot_address}):\n{frank_emails}"
-                    except Exception:
-                        pass
+                    except Exception as e:
+                        log.warning(f"AgentMail inbox load failed: {e}")
 
                 email_context += f"\n\nThis is {user_nick}'s private email data. NEVER share it with other family members."
             else:
@@ -331,8 +335,8 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
                     sign = "+" if tx["tx_type"] == "deposit" else "-"
                     finance_context += f"  {tx['date']} — {sign}${tx['amount']:.2f} — {tx['description']} [{tx['category']}]\n"
             finance_context += f"\nThis is {user_nick}'s private financial data. NEVER share with other family members."
-        except Exception:
-            # Fall back to Firefly if built-in finance fails
+        except Exception as e:
+            log.warning(f"Built-in finance lookup failed for {user_name}: {e}; falling back to Firefly")
             if firefly:
                 try:
                     summary = firefly.get_monthly_summary()
@@ -347,7 +351,8 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
                         finance_context += "\nRecent transactions:\n"
                         for tx in recent:
                             finance_context += f"  {tx['date']} - {tx['description']}: ${tx['amount']} ({tx['category']})\n"
-                except Exception:
+                except Exception as e2:
+                    log.warning(f"Firefly fallback also failed: {e2}")
                     finance_context = "\nFinance data unavailable right now.\n"
 
     import prompt_builder

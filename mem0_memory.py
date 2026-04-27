@@ -1,41 +1,51 @@
 """Mem0 memory integration for Frank.
 Provides intelligent memory with entity extraction, deduplication, and semantic search.
 Uses Ollama for embeddings and OpenRouter for extraction."""
-import os
-import ssl
+import contextlib
 import logging
 from pathlib import Path
 
 import config as app_config
 
-# Conditionally disable SSL verification for self-signed certs
-if app_config.MEM0_SKIP_SSL_VERIFY:
-    ssl._create_default_https_context = ssl._create_unverified_context
-    os.environ["CURL_CA_BUNDLE"] = ""
-
-    import httpx
-    _original_client = httpx.Client
-    _original_async_client = httpx.AsyncClient
-
-    class _NoVerifyClient(_original_client):
-        def __init__(self, *args, **kwargs):
-            kwargs["verify"] = False
-            super().__init__(*args, **kwargs)
-
-    class _NoVerifyAsyncClient(_original_async_client):
-        def __init__(self, *args, **kwargs):
-            kwargs["verify"] = False
-            super().__init__(*args, **kwargs)
-
-    httpx.Client = _NoVerifyClient
-    httpx.AsyncClient = _NoVerifyAsyncClient
-
-from mem0 import Memory
-
 log = logging.getLogger("family-bot.mem0")
 
 _memory = None
 _data_dir = Path(app_config._paths.get("data_dir", Path(__file__).parent / "data"))
+
+
+@contextlib.contextmanager
+def _httpx_skip_verify():
+    """Scope SSL bypass to Mem0 calls.
+
+    Mem0's Ollama embedder uses httpx and has no public knob to pass
+    verify=False. Patching httpx.Client/AsyncClient globally would silently
+    disable SSL for every other caller in the process (OpenRouter, Firefly,
+    Immich, etc.). This context manager swaps in permissive subclasses only
+    while a Mem0 entry point runs, then restores the originals.
+    """
+    if not app_config.MEM0_SKIP_SSL_VERIFY:
+        yield
+        return
+
+    import httpx
+    saved_sync, saved_async = httpx.Client, httpx.AsyncClient
+
+    class _NoVerifyClient(saved_sync):
+        def __init__(self, *args, **kwargs):
+            kwargs.setdefault("verify", False)
+            super().__init__(*args, **kwargs)
+
+    class _NoVerifyAsyncClient(saved_async):
+        def __init__(self, *args, **kwargs):
+            kwargs.setdefault("verify", False)
+            super().__init__(*args, **kwargs)
+
+    httpx.Client = _NoVerifyClient
+    httpx.AsyncClient = _NoVerifyAsyncClient
+    try:
+        yield
+    finally:
+        httpx.Client, httpx.AsyncClient = saved_sync, saved_async
 
 
 def get_memory():
@@ -44,7 +54,13 @@ def get_memory():
     if _memory is not None:
         return _memory
 
-    mem0_data_path = str(_data_dir / "mem0_data") if not Path(app_config._paths.get("mem0_data", "")).is_absolute() else app_config._paths.get("mem0_data", "")
+    import os
+
+    mem0_data_path = (
+        str(_data_dir / "mem0_data")
+        if not Path(app_config._paths.get("mem0_data", "")).is_absolute()
+        else app_config._paths.get("mem0_data", "")
+    )
     mem0_history_path = str(_data_dir / "mem0_history.db")
 
     config = {
@@ -77,7 +93,9 @@ def get_memory():
         "version": "v1.1",
     }
 
-    _memory = Memory.from_config(config)
+    with _httpx_skip_verify():
+        from mem0 import Memory
+        _memory = Memory.from_config(config)
     log.info("Mem0 initialized")
     return _memory
 
@@ -85,8 +103,9 @@ def get_memory():
 def add(text, user_id="family", metadata=None):
     """Add a memory from a conversation. Mem0 auto-extracts facts."""
     try:
-        m = get_memory()
-        result = m.add(text, user_id=user_id, metadata=metadata or {})
+        with _httpx_skip_verify():
+            m = get_memory()
+            result = m.add(text, user_id=user_id, metadata=metadata or {})
         if result and result.get("results"):
             facts = [r.get("memory", "") for r in result["results"] if r.get("event") in ("ADD", "UPDATE")]
             if facts:
@@ -101,8 +120,9 @@ def add(text, user_id="family", metadata=None):
 def search(query, user_id="family", limit=5):
     """Search memories. Returns list of relevant memory strings."""
     try:
-        m = get_memory()
-        results = m.search(query, user_id=user_id, limit=limit)
+        with _httpx_skip_verify():
+            m = get_memory()
+            results = m.search(query, user_id=user_id, limit=limit)
         if results and results.get("results"):
             return [r["memory"] for r in results["results"] if r.get("memory")]
         return []
@@ -114,8 +134,9 @@ def search(query, user_id="family", limit=5):
 def get_all(user_id="family"):
     """Get all memories for a user."""
     try:
-        m = get_memory()
-        results = m.get_all(user_id=user_id)
+        with _httpx_skip_verify():
+            m = get_memory()
+            results = m.get_all(user_id=user_id)
         if results and results.get("results"):
             return [r["memory"] for r in results["results"] if r.get("memory")]
         return []

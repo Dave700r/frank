@@ -728,7 +728,7 @@ async def cmd_transactions(room_id: str, args: str, room: MatrixRoom, sender: st
 
 
 async def cmd_briefing(room_id: str):
-    msg = briefing.build_briefing()
+    msg = await asyncio.to_thread(briefing.build_briefing)
     await _send(room_id, msg)
 
 

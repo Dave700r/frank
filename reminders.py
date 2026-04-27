@@ -1,4 +1,5 @@
 """Reminder system for family members."""
+import contextlib
 import sqlite3
 import logging
 from datetime import datetime, timedelta
@@ -29,61 +30,53 @@ def _get_conn():
 
 def add_reminder(user_name, telegram_id, message, remind_at):
     """Add a reminder. remind_at is a datetime object."""
-    conn = _get_conn()
-    conn.execute(
-        "INSERT INTO reminders (user_name, telegram_id, message, remind_at) VALUES (?, ?, ?, ?)",
-        (user_name, telegram_id, message, remind_at.strftime("%Y-%m-%d %H:%M")),
-    )
-    conn.commit()
-    conn.close()
+    with contextlib.closing(_get_conn()) as conn:
+        conn.execute(
+            "INSERT INTO reminders (user_name, telegram_id, message, remind_at) VALUES (?, ?, ?, ?)",
+            (user_name, telegram_id, message, remind_at.strftime("%Y-%m-%d %H:%M")),
+        )
+        conn.commit()
     log.info(f"Reminder set for {user_name} at {remind_at}: {message}")
     return True
 
 
 def get_due_reminders():
     """Get all undelivered reminders that are due now or past due."""
-    conn = _get_conn()
-    now = datetime.now().strftime("%Y-%m-%d %H:%M")
-    rows = conn.execute(
-        "SELECT id, user_name, telegram_id, message, remind_at "
-        "FROM reminders WHERE delivered=0 AND remind_at <= ?",
-        (now,),
-    ).fetchall()
-    conn.close()
-    return rows
+    with contextlib.closing(_get_conn()) as conn:
+        now = datetime.now().strftime("%Y-%m-%d %H:%M")
+        return conn.execute(
+            "SELECT id, user_name, telegram_id, message, remind_at "
+            "FROM reminders WHERE delivered=0 AND remind_at <= ?",
+            (now,),
+        ).fetchall()
 
 
 def mark_delivered(reminder_id):
     """Mark a reminder as delivered."""
-    conn = _get_conn()
-    conn.execute(
-        "UPDATE reminders SET delivered=1, delivered_at=datetime('now','localtime') WHERE id=?",
-        (reminder_id,),
-    )
-    conn.commit()
-    conn.close()
+    with contextlib.closing(_get_conn()) as conn:
+        conn.execute(
+            "UPDATE reminders SET delivered=1, delivered_at=datetime('now','localtime') WHERE id=?",
+            (reminder_id,),
+        )
+        conn.commit()
 
 
 def get_pending_for_user(user_name):
     """Get all pending reminders for a user."""
-    conn = _get_conn()
-    rows = conn.execute(
-        "SELECT id, message, remind_at FROM reminders "
-        "WHERE user_name=? AND delivered=0 ORDER BY remind_at",
-        (user_name,),
-    ).fetchall()
-    conn.close()
-    return rows
+    with contextlib.closing(_get_conn()) as conn:
+        return conn.execute(
+            "SELECT id, message, remind_at FROM reminders "
+            "WHERE user_name=? AND delivered=0 ORDER BY remind_at",
+            (user_name,),
+        ).fetchall()
 
 
 def cancel_reminder(reminder_id):
     """Cancel (delete) a reminder."""
-    conn = _get_conn()
-    cur = conn.execute("DELETE FROM reminders WHERE id=? AND delivered=0", (reminder_id,))
-    conn.commit()
-    affected = cur.rowcount
-    conn.close()
-    return affected > 0
+    with contextlib.closing(_get_conn()) as conn:
+        cur = conn.execute("DELETE FROM reminders WHERE id=? AND delivered=0", (reminder_id,))
+        conn.commit()
+        return cur.rowcount > 0
 
 
 def parse_reminder_time(text):

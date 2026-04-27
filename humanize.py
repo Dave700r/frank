@@ -125,6 +125,7 @@ class MessageBatcher:
     def __init__(self, delay: float = 2.5):
         self.delay = delay
         self._pending = {}  # chat_id -> {"messages": [...], "task": Task, "callback": fn}
+        self._tasks = set()  # strong refs so create_task() results aren't GC'd mid-flight
 
     async def add(self, chat_id: str, message: str, user_name: str,
                   callback, **kwargs):
@@ -143,10 +144,10 @@ class MessageBatcher:
                 "kwargs": kwargs,
             }
 
-        # Set new timer
-        self._pending[key]["task"] = asyncio.create_task(
-            self._flush(key)
-        )
+        task = asyncio.create_task(self._flush(key))
+        self._tasks.add(task)
+        task.add_done_callback(self._tasks.discard)
+        self._pending[key]["task"] = task
 
     async def _flush(self, key: str):
         """Wait for the batch delay, then process all collected messages."""
@@ -172,6 +173,14 @@ class MessageBatcher:
             await callback(combined, user_name=user_name, **kwargs)
         except Exception as e:
             log.error(f"Batch callback error: {e}")
+
+    async def close(self):
+        """Cancel any in-flight flush tasks. Call on shutdown to avoid losing batched messages quietly."""
+        for task in list(self._tasks):
+            task.cancel()
+        if self._tasks:
+            await asyncio.gather(*self._tasks, return_exceptions=True)
+        self._pending.clear()
 
 
 # ─── In-Character Error Messages ───

@@ -72,7 +72,7 @@ log = logging.getLogger("family-bot")
 
 async def job_morning_briefing():
     """6:30 AM - Morning briefing to family group."""
-    msg = briefing.build_briefing()
+    msg = await asyncio.to_thread(briefing.build_briefing)
     await matrix_client.send_to_family_group(msg)
     log.info("Morning briefing sent (Matrix)")
 

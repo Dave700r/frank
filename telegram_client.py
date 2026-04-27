@@ -381,7 +381,7 @@ async def cmd_buddy_handler(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
 
 
 async def cmd_briefing(update: Update, ctx: ContextTypes.DEFAULT_TYPE):
-    msg = briefing.build_briefing()
+    msg = await asyncio.to_thread(briefing.build_briefing)
     await update.message.reply_text(msg)
 
 
