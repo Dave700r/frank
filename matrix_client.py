@@ -1569,12 +1569,17 @@ async def _handle_ai_message(text: str, user_name: str, room_id: str,
                     query = _re.sub(r'\b(of|a|an|the|my|our|some|any|random|me|and|to|for)\b', '', raw_query).strip()
                     query = _re.sub(r'\s+', ' ', query).strip()
 
-                    # Check if query is a family member name — use face search
+                    # Check if query is a family member name — use face search.
+                    # Immich tags people by first-name (e.g. "Dave"), but family members
+                    # may be referenced by nickname (e.g. "Dad"). Match on either, but
+                    # always pass the family-key (matches Immich tag) to search_by_person.
                     family_names = {n: m.get("nickname", n.title()) for n, m in config.FAMILY_MEMBERS.items()}
-                    matched_person = None
+                    matched_person = None      # display nick, e.g. "Dad"
+                    matched_immich_name = None  # Immich tag, e.g. "dave"
                     for name, nick in family_names.items():
                         if name in query.lower() or nick.lower() in query.lower():
                             matched_person = nick
+                            matched_immich_name = name
                             break
 
                     # Detect DM target: "send to paula", "dm paula", "direct message paula"
@@ -1587,8 +1592,8 @@ async def _handle_ai_message(text: str, user_name: str, room_id: str,
                                 dm_target = name
                                 break
 
-                    if query and matched_person:
-                        results = immich_client.search_by_person(matched_person, limit=10)
+                    if query and matched_immich_name:
+                        results = immich_client.search_by_person(matched_immich_name, limit=10)
                     elif query:
                         results = immich_client.search_photos(query, limit=5)
                     else:
