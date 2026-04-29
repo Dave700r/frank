@@ -384,8 +384,13 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
         messages.append({"role": "assistant", "content": prev_frank})
     messages.append({"role": "user", "content": text})
 
-    # Match response length to input, but ensure enough room for an action JSON block
-    max_tokens = max(humanize.get_max_tokens(text), 150)
+    # Match response length to input, but ensure enough room for an action JSON
+    # block. Action payloads can be large (e.g. send_message with the full
+    # shopping list), so the floor needs to comfortably cover the longest action
+    # we plausibly emit. Anthropic only bills generated tokens, not the budget,
+    # so a high floor is free on short replies and prevents mid-JSON truncation
+    # on long ones.
+    max_tokens = max(humanize.get_max_tokens(text), 2000)
 
     response = _chat(
         messages=messages,
@@ -432,19 +437,30 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
             actions.append(candidate)
             clean_reply = clean_reply.replace(match.group(), "", 1)
 
-    # Sweep up residue: empty/comma-only array brackets, then code fences whose
-    # body is now just whitespace/punctuation, then any straggling fences.
+    # Sweep up residue: empty/comma-only array brackets, then any ```json fenced
+    # block (closed or unterminated — truncated responses leave an open fence),
+    # then any straggling plain ``` fences. Stripping the whole fenced block —
+    # not just empty ones — protects against malformed/truncated JSON leaking
+    # into chat when token budget runs out mid-action.
     clean_reply = re.sub(r'\[\s*(?:,\s*)*\]', '', clean_reply)
-    clean_reply = re.sub(
-        r'```(?:json)?\s*[\s,\[\]\{\}]*```',
-        '',
-        clean_reply,
-        flags=re.DOTALL,
-    )
+    # ```json ... ``` (closed)
+    clean_reply = re.sub(r'```json\b.*?```', '', clean_reply, flags=re.DOTALL | re.IGNORECASE)
+    # ```json ... <eof>  (unterminated, truncated)
+    clean_reply = re.sub(r'```json\b.*\Z', '', clean_reply, flags=re.DOTALL | re.IGNORECASE)
+    # any other empty fenced blocks
     clean_reply = re.sub(r'```\w*\s*```', '', clean_reply)
     clean_reply = re.sub(r'```\w*\s*$', '', clean_reply)
     clean_reply = re.sub(r'^\s*```', '', clean_reply)
     clean_reply = clean_reply.strip()
+
+    # If Claude clearly tried to emit an action but it got truncated (no parsed
+    # actions but a json fence existed), warn so we can spot recurrences.
+    if not actions and re.search(r'```json\b', response, re.IGNORECASE):
+        log.warning(
+            "Action JSON appeared in response but could not be parsed — "
+            "likely truncated. Response length: %d chars",
+            len(response),
+        )
 
     final_reply = clean_reply or response
 
