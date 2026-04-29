@@ -106,11 +106,16 @@ def _chat_claude(messages, system=None, max_tokens=300, use_advisor=True):
     except Exception as e:
         log.warning(f"Claude token tracking failed: {e}")
 
-    # Extract text from response
+    # Extract text from response. With the advisor beta enabled, response.content
+    # can include non-text blocks (advisor tool calls/results) and even text-shaped
+    # blocks whose .text is None — concatenate every real string block instead of
+    # returning the first one with a .text attribute.
+    text_parts = []
     for block in response.content:
-        if hasattr(block, "text"):
-            return block.text
-    return ""
+        block_text = getattr(block, "text", None)
+        if isinstance(block_text, str) and block_text:
+            text_parts.append(block_text)
+    return "\n".join(text_parts)
 
 
 def _chat_openrouter(messages, system=None, model=None, max_tokens=300):
@@ -388,27 +393,58 @@ def handle_message(text, user_name=None, is_private=False, chat_id=None, extra_c
         max_tokens=max_tokens,
     )
 
-    # Extract all action JSON blocks from the response
+    # Defensive: if a backend returns None/non-str, treat as empty so regex below
+    # doesn't crash the whole action pipeline.
+    if not isinstance(response, str):
+        response = response or ""
+
+    # Extract all action JSON blocks from the response. Claude sometimes returns
+    # multiple actions as an array (`[{...},{...}]`) and sometimes as standalone
+    # objects, so handle both — and remove the matched text so it doesn't leak
+    # into the user-facing reply.
     import re
     actions = []
     clean_reply = response
 
-    # Find all JSON-like blocks
-    for match in re.finditer(r'\{[^{}]+\}', response):
+    # Arrays of action objects first — match the whole array so we can strip it.
+    array_pattern = re.compile(
+        r'\[\s*\{[^\[\]]+?\}\s*(?:,\s*\{[^\[\]]+?\}\s*)*\]',
+        re.DOTALL,
+    )
+    for match in array_pattern.finditer(response):
         try:
             candidate = json.loads(match.group())
-            if "action" in candidate:
-                actions.append(candidate)
         except (json.JSONDecodeError, ValueError):
             continue
+        if isinstance(candidate, list) and all(
+            isinstance(x, dict) and "action" in x for x in candidate
+        ):
+            actions.extend(candidate)
+            clean_reply = clean_reply.replace(match.group(), "", 1)
 
-    # Strip all JSON blocks and code fences from the reply
-    if actions:
-        clean_reply = re.sub(r'\s*\{[^{}]*"action"[^{}]*\}\s*', '', response).strip()
-    # Clean up any remaining code fences (```json```, ``` etc)
-    clean_reply = re.sub(r'```\w*\s*```', '', clean_reply).strip()
-    clean_reply = re.sub(r'```\w*\s*$', '', clean_reply).strip()
-    clean_reply = re.sub(r'^\s*```', '', clean_reply).strip()
+    # Standalone action objects from whatever's left.
+    for match in re.finditer(r'\{[^{}]+\}', clean_reply):
+        try:
+            candidate = json.loads(match.group())
+        except (json.JSONDecodeError, ValueError):
+            continue
+        if isinstance(candidate, dict) and "action" in candidate:
+            actions.append(candidate)
+            clean_reply = clean_reply.replace(match.group(), "", 1)
+
+    # Sweep up residue: empty/comma-only array brackets, then code fences whose
+    # body is now just whitespace/punctuation, then any straggling fences.
+    clean_reply = re.sub(r'\[\s*(?:,\s*)*\]', '', clean_reply)
+    clean_reply = re.sub(
+        r'```(?:json)?\s*[\s,\[\]\{\}]*```',
+        '',
+        clean_reply,
+        flags=re.DOTALL,
+    )
+    clean_reply = re.sub(r'```\w*\s*```', '', clean_reply)
+    clean_reply = re.sub(r'```\w*\s*$', '', clean_reply)
+    clean_reply = re.sub(r'^\s*```', '', clean_reply)
+    clean_reply = clean_reply.strip()
 
     final_reply = clean_reply or response
 
