@@ -29,7 +29,7 @@ def get_shopping_list():
     return rows
 
 
-def add_shopping_item(name, category="other", qty=None, requested_by=None):
+def add_shopping_item(name, category="miscellaneous", qty=None, requested_by=None):
     """Add item to shopping list. Returns (added: bool, existing_name: str|None).
     If a similar item is already on the list, returns (False, existing_name)."""
     conn = get_inventory_conn()

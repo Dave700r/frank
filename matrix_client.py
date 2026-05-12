@@ -236,9 +236,10 @@ async def cmd_list(room_id: str):
         return
 
     cat_emoji = {
-        "PRODUCE": "🥬", "DAIRY": "🥛", "MEAT": "🥩", "BAKERY": "🍞",
-        "PANTRY": "🥫", "FROZEN": "🧊", "HOUSEHOLD": "🧹", "PET": "🐕",
-        "OTHER": "📦",
+        "PRODUCE": "🥬", "DAIRY": "🥛", "MEATS": "🥩", "MEAT": "🥩",
+        "PANTRY": "🥫", "HOUSEHOLD": "🧹",
+        "MISCELLANEOUS": "📦", "OTHER": "📦",
+        "BAKERY": "🍞", "FROZEN": "🧊", "PET": "🐕",
     }
 
     by_cat = {}
@@ -1634,7 +1635,8 @@ async def _handle_ai_message(text: str, user_name: str, room_id: str,
             act = action.get("action")
             item = action.get("item", "")
             if act == "add" and item and db:
-                added, existing = db.add_shopping_item(item, requested_by=user_name)
+                category = action.get("category", "miscellaneous")
+                added, existing = db.add_shopping_item(item, category=category, requested_by=user_name)
                 if not added and existing.lower() not in reply.lower():
                     reply = reply.rstrip() + f"\n\n('{existing}' is already on the list — want me to add a different brand/variety too?)"
             elif act == "bought" and item and db:

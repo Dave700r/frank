@@ -86,9 +86,10 @@ async def job_grocery_push():
         return
 
     cat_emoji = {
-        "PRODUCE": "🥬", "DAIRY": "🥛", "MEAT": "🥩", "BAKERY": "🍞",
-        "PANTRY": "🥫", "FROZEN": "🧊", "HOUSEHOLD": "🧹", "PET": "🐕",
-        "OTHER": "📦",
+        "PRODUCE": "🥬", "DAIRY": "🥛", "MEATS": "🥩", "MEAT": "🥩",
+        "PANTRY": "🥫", "HOUSEHOLD": "🧹",
+        "MISCELLANEOUS": "📦", "OTHER": "📦",
+        "BAKERY": "🍞", "FROZEN": "🧊", "PET": "🐕",
     }
 
     by_cat = {}
